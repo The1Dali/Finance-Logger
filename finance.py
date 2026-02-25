@@ -94,12 +94,26 @@ def main():
 def log(action, name="", value=""):
     write_header = not os.path.exists(LOG_FILE)
 
+    date_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  
+    action_fmt = str(action).ljust(8)
+    name_fmt   = str(name).ljust(45)
+    value_fmt  = (f"{float(value):.3f}" if value != "" else "").rjust(20)
+
+    header = [
+        "Date               ",   
+        "Action  ",              
+        "Item".ljust(45),      
+        "Value".rjust(20),       
+    ]
+
+    row = [date_str, action_fmt, name_fmt, value_fmt]
+
     try:
         with open(LOG_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
+            writer = csv.writer(f, delimiter="-")
             if write_header:
-                writer.writerow(["Date", "Action", "Item", "Value"])
-            writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, name, value])
+                writer.writerow(header)
+            writer.writerow(row)
     except OSError as e:
         print(f"Warning: could not write to log file '{LOG_FILE}': {e}", file=sys.stderr)
 
