@@ -3,75 +3,128 @@ import csv
 import os
 from datetime import datetime
 
+FINANCE_FILE = os.environ.get("FINANCE_FILE", "finance.csv")
+LOG_FILE = os.environ.get("LOG_FILE", "log.csv")
+
+EXIT_OK           = 0
+EXIT_BAD_ARGS     = 1
+EXIT_INVALID_INPUT = 2
+EXIT_NOT_FOUND    = 3
+EXIT_FILE_ERROR   = 4
+
+
+def print_help():
+    print(
+        "\nUsage: python finance.py <operation>\n"
+        "\nOperations:\n"
+        "  +  <name> <value>   Add <value> to an item called <name>. Creates it if it doesn't exist.\n"
+        "  -  <name>           Remove the item called <name>.\n"
+        "  clear               Wipe all entries from the finance file.\n"
+        "  list                Print all current entries to the terminal.\n"
+        "  --help, -h          Show this help message.\n"
+        "\nEnvironment Variables:\n"
+        f"  FINANCE_FILE        Path to the finance CSV file (default: {FINANCE_FILE})\n"
+        f"  LOG_FILE            Path to the log CSV file     (default: {LOG_FILE})\n"
+        "\nExit Codes:\n"
+        "  0  Success\n"
+        "  1  Bad or missing arguments\n"
+        "  2  Invalid input value\n"
+        "  3  Item not found\n"
+        "  4  File error\n"
+    )
+
 
 def main():
-    # Fix #9: close the file immediately after reading rows
     try:
-        with open("finance.csv", "r") as file:
+        with open(FINANCE_FILE, "r") as file:
             reader = csv.reader(file, delimiter="-")
             rows = [[cell.strip() for cell in row] for row in reader]
     except FileNotFoundError:
-        # Fix #1: create the file if it doesn't exist yet
         rows = []
-        with open("finance.csv", "w"):
-            pass
+        try:
+            with open(FINANCE_FILE, "w"):
+                pass
+        except OSError as e:
+            print(f"Error: could not create '{FINANCE_FILE}': {e}", file=sys.stderr)
+            sys.exit(EXIT_FILE_ERROR)
 
     try:
         match sys.argv[1]:
-            case "*.":
-                flash()
+            case "--help" | "-h":
+                print_help()
+                sys.exit(EXIT_OK)
+
             case "+" if len(sys.argv) > 3:
                 add(sys.argv[2], sys.argv[3], rows)
+
             case "+":
-                # Fix #8: targeted error message for missing arguments
-                print("Usage: python finance.py + <name> <value>")
-                sys.exit(1)
+                print("Usage: python finance.py + <name> <value>", file=sys.stderr)
+                sys.exit(EXIT_BAD_ARGS)
+
             case "-" if len(sys.argv) > 2:
                 remove(sys.argv[2], rows)
-            case "-":
-                # Fix #8: targeted error message for missing arguments
-                print("Usage: python finance.py - <name>")
-                sys.exit(1)
-            case _:
-                print("Correct usage: python finance.py {operation}")
-                sys.exit(1)
-    except IndexError:
-        print("Operation not specified")
-        sys.exit(1)
 
-    sys.exit(0)
+            case "-":
+                print("Usage: python finance.py - <name>", file=sys.stderr)
+                sys.exit(EXIT_BAD_ARGS)
+
+            case "clear":
+                flash()
+
+            case "list":
+                list_entries(rows)
+
+            case _:
+                print(
+                    "Unknown operation. Run 'python finance.py --help' for usage.",
+                    file=sys.stderr
+                )
+                sys.exit(EXIT_BAD_ARGS)
+
+    except IndexError:
+        print(
+            "No operation specified. Run 'python finance.py --help' for usage.",
+            file=sys.stderr
+        )
+        sys.exit(EXIT_BAD_ARGS)
+
+    sys.exit(EXIT_OK)
 
 
 def log(action, name="", value=""):
-    # Fix #10: use os.path.exists instead of opening the file to check
-    write_header = not os.path.exists("log.csv")
+    write_header = not os.path.exists(LOG_FILE)
 
-    with open("log.csv", "a", newline="") as f:
-        writer = csv.writer(f)
-        if write_header:
-            writer.writerow(["Date", "Action", "Item", "Value"])
-        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, name, value])
+    try:
+        with open(LOG_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(["Date", "Action", "Item", "Value"])
+            writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, name, value])
+    except OSError as e:
+        print(f"Warning: could not write to log file '{LOG_FILE}': {e}", file=sys.stderr)
 
 
 def write(rows):
-    with open("finance.csv", "w", newline="") as file:
-        writer = csv.writer(file, delimiter="-")
-        for row in rows:
-            # Fix #7: safely fall back to 0.000% if percentage is missing or empty
-            try:
-                pct = f"{float(row[2]):.3f}%"
-            except (ValueError, IndexError):
-                pct = "0.000%"
-            f_row = [
-                row[0].ljust(45),
-                (f"{float(row[1]):.3f}").center(20),
-                pct.rjust(20)
-            ]
-            writer.writerow(f_row)
+    try:
+        with open(FINANCE_FILE, "w", newline="") as file:
+            writer = csv.writer(file, delimiter="-")
+            for row in rows:
+                try:
+                    pct = f"{float(row[2]):.3f}%"
+                except (ValueError, IndexError):
+                    pct = "0.000%"
+                f_row = [
+                    row[0].ljust(45),
+                    (f"{float(row[1]):.3f}").center(20),
+                    pct.rjust(20)
+                ]
+                writer.writerow(f_row)
+    except OSError as e:
+        print(f"Error: could not write to '{FINANCE_FILE}': {e}", file=sys.stderr)
+        sys.exit(EXIT_FILE_ERROR)
 
 
 def refresh(rows):
-    # Fix #4: renamed 'sum' to 'total' to avoid shadowing the built-in
     total = 0
     total_index = -1
 
@@ -92,30 +145,29 @@ def refresh(rows):
         except ZeroDivisionError:
             rows[i][2] = "0.0"
 
-    # Fix #3: sort in place so the list is actually mutated, not just a local rebind
     rows.sort(key=lambda row: float(row[2]), reverse=True)
     write(rows)
 
 
 def add(name, value, rows):
-    # Fix #6: validate that value is numeric at the entry point with a clear error message
     try:
         value = float(value)
     except ValueError:
-        print(f"Error: '{value}' is not a valid number.")
-        sys.exit(1)
+        print(f"Error: '{value}' is not a valid number.", file=sys.stderr)
+        sys.exit(EXIT_INVALID_INPUT)
 
     found = False
     for i in range(len(rows)):
         if rows[i][0].strip().upper() == name.upper():
-            rows[i][1] = str(float(rows[i][1]) + value)
+            old_value = float(rows[i][1])
+            rows[i][1] = str(old_value + value)
             found = True
-            # Fix #2: break after first match, consistent with remove()
+            print(f"Updated '{name}': {old_value:.3f} → {old_value + value:.3f}")
             break
 
     if not found:
-        # Fix #7: initialize percentage to "0.0" instead of "" to avoid formatting crash
         rows.append([name, str(value), "0.0"])
+        print(f"Added new item '{name}' with value {value:.3f}")
 
     log("ADD", name, value)
     refresh(rows)
@@ -125,21 +177,44 @@ def remove(name, rows):
     for i in range(len(rows)):
         if rows[i][0].strip().upper() == name.upper():
             rows.pop(i)
-            print("Element removed")
+            print(f"'{name}' was removed.")
             log("REMOVE", name)
             break
     else:
-        print("Element not found")
+        print(f"'{name}' was not found.", file=sys.stderr)
+        sys.exit(EXIT_NOT_FOUND)
 
     refresh(rows)
 
 
 def flash():
-    # Fix #5: log the flash event without ever deleting anything from log.csv
-    with open("finance.csv", "w"):
-        pass
-    log("FLASH", "", "")
-    print("Flashed")
+    try:
+        with open(FINANCE_FILE, "w"):
+            pass
+    except OSError as e:
+        print(f"Error: could not clear '{FINANCE_FILE}': {e}", file=sys.stderr)
+        sys.exit(EXIT_FILE_ERROR)
+    log("CLEAR", "", "")
+    print(f"'{FINANCE_FILE}' has been cleared.")
+
+
+def list_entries(rows):
+    if not rows:
+        print("No entries found.")
+        return
+
+    print(f"\n{'Item':<45} {'Value':>15} {'Share':>10}")
+    print("-" * 72)
+    for row in rows:
+        try:
+            name  = row[0].strip()
+            value = f"{float(row[1]):.3f}"
+            pct   = f"{float(row[2]):.3f}%"
+        except (ValueError, IndexError):
+            continue
+        label = f"[{name}]" if name.upper() == "TOTAL" else name
+        print(f"{label:<45} {value:>15} {pct:>10}")
+    print()
 
 
 main()
