@@ -1,5 +1,6 @@
 import sys
 import csv
+from datetime import datetime
 
 def main():
     with open("finance.csv", "r") as file:
@@ -20,6 +21,20 @@ def main():
             print("Operation not specified")
             sys.exit(1)
     sys.exit(0)
+
+def log(action, name, value=""):
+    file_exists = False
+    try:
+        with open("log.csv", "r") as f:
+            file_exists = any(True for _ in f)
+    except FileNotFoundError:
+        pass
+
+    with open("log.csv", "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Date", "Action", "Item", "Value"])
+        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), action, name, value])
 
 def write(rows):
     with open("finance.csv", "w") as file:
@@ -56,26 +71,22 @@ def add(name, value, rows):
             found = True
     if not(found):
         rows.append([name, value, ""])
+    log("ADD", name, value)
     refresh(rows)
-
-
-
 
 def remove(name, rows):
     for i in range(len(rows)):
         if rows[i][0].upper() == name.upper():
             rows.pop(i)
             print("Element removed")
+            log("REMOVE", name)
             break
     else:
         print("Element not found")
     refresh(rows)
 
-
-
 def flash():
     with open("finance.csv", "w") as file:
         print("Flashed")
 
-
-main()     
+main()
