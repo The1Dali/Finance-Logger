@@ -1,5 +1,0 @@
-#! /bin/bash
-
-cd /home/dali/Coding/WebFinance
-source .venv/bin/activate
-python app.py
