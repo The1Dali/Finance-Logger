@@ -94,19 +94,20 @@ def main():
 def log(action, name="", value=""):
     write_header = not os.path.exists(LOG_FILE)
 
-    date_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  
-    action_fmt = str(action).ljust(8)
+    date_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     name_fmt   = str(name).ljust(45)
+    action_fmt = str(action).center(12)
     value_fmt  = (f"{float(value):.3f}" if value != "" else "").rjust(20)
+    date_fmt   = date_str.rjust(19)
 
     header = [
-        "Date               ",   
-        "Action  ",              
-        "Item".ljust(45),      
-        "Value".rjust(20),       
+        "Item".ljust(45),
+        "Action".center(12),
+        "Value".rjust(20),
+        "Date".rjust(19),
     ]
 
-    row = [date_str, action_fmt, name_fmt, value_fmt]
+    row = [name_fmt, action_fmt, value_fmt, date_fmt]
 
     try:
         with open(LOG_FILE, "a", newline="") as f:
