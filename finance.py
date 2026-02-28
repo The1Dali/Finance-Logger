@@ -250,11 +250,10 @@ def export_xlsx(rows):
 
     wb = Workbook()
 
-    # ── shared style helpers ──────────────────────────────────────────────────
     FONT_NAME   = "Arial"
     CLR_HEADER_BG  = "2E4057"  
     CLR_HEADER_FG  = "FFFFFF"   
-    CLR_TOTAL_BG   = "D9E1F2"   
+    CLR_TOTAL_BG   = "D9E1F2"  
     CLR_TOTAL_FG   = "1F3864"  
     CLR_ALT_ROW    = "F2F5FB"   
     CLR_WHITE      = "FFFFFF"
@@ -286,7 +285,7 @@ def export_xlsx(rows):
             bottom=Side(style="hair", color="CCCCCC")
         )
 
-    # ── Finance sheet ─────────────────────────────────────────────────────────
+
     fs = wb.active
     fs.title = "Finance"
     fs.freeze_panes = "A2"   
@@ -335,7 +334,6 @@ def export_xlsx(rows):
         value_cell.number_format = '#,##0.000'
         pct_cell.number_format   = '0.00%'
 
-    # ── Log sheet ─────────────────────────────────────────────────────────────
     ls = wb.create_sheet(title="Log")
     ls.freeze_panes = "A2"
     ls.row_dimensions[1].height = 28
@@ -351,7 +349,7 @@ def export_xlsx(rows):
     ls.column_dimensions["D"].width = 22
 
     ACTION_COLORS = {
-        "ADD":    "E2EFDA",   
+        "ADD":    "E2EFDA",  
         "REMOVE": "FCE4D6",  
         "CLEAR":  "FFF2CC",  
     }
@@ -361,7 +359,7 @@ def export_xlsx(rows):
         try:
             with open(LOG_FILE, "r", newline="") as f:
                 reader = csv.reader(f, delimiter="-")
-                next(reader, None)   
+                next(reader, None)  
                 log_rows = list(reader)
         except OSError:
             pass
@@ -408,13 +406,18 @@ def export_xlsx(rows):
         if val_num is not None:
             value_cell.number_format = '#,##0.000'
 
-    # ── save ─────────────────────────────────────────────────────────────────
     try:
         wb.save(EXPORT_FILE)
-        print(f"Exported to '{EXPORT_FILE}' — Finance sheet ({len(data_rows)} items) + Log sheet ({len(log_rows)} entries).")
     except OSError as e:
         print(f"Error: could not save '{EXPORT_FILE}': {e}", file=sys.stderr)
         sys.exit(EXIT_FILE_ERROR)
+
+    import subprocess
+    recalc_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recalc.py")
+    if os.path.exists(recalc_script):
+        subprocess.run([sys.executable, recalc_script, EXPORT_FILE], check=False)
+
+    print(f"Exported to '{EXPORT_FILE}' - Finance sheet ({len(data_rows)} items) + Log sheet ({len(log_rows)} entries).")
 
 
 main()
