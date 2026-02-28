@@ -252,10 +252,10 @@ def export_xlsx(rows):
 
     FONT_NAME   = "Arial"
     CLR_HEADER_BG  = "2E4057"  
-    CLR_HEADER_FG  = "FFFFFF"   
-    CLR_TOTAL_BG   = "D9E1F2"  
-    CLR_TOTAL_FG   = "1F3864"  
-    CLR_ALT_ROW    = "F2F5FB"   
+    CLR_HEADER_FG  = "FFFFFF"  
+    CLR_TOTAL_BG   = "D9E1F2"   
+    CLR_TOTAL_FG   = "1F3864"   
+    CLR_ALT_ROW    = "F2F5FB"  
     CLR_WHITE      = "FFFFFF"
     CLR_ACCENT     = "4472C4"   
 
@@ -284,7 +284,6 @@ def export_xlsx(rows):
             right=Side(style="hair", color="CCCCCC"),
             bottom=Side(style="hair", color="CCCCCC")
         )
-
 
     fs = wb.active
     fs.title = "Finance"
@@ -348,10 +347,11 @@ def export_xlsx(rows):
     ls.column_dimensions["C"].width = 18
     ls.column_dimensions["D"].width = 22
 
+
     ACTION_COLORS = {
-        "ADD":    "E2EFDA",  
-        "REMOVE": "FCE4D6",  
-        "CLEAR":  "FFF2CC",  
+        "ADD":    "E2EFDA",   
+        "REMOVE": "FCE4D6",   
+        "CLEAR":  "FFF2CC",   
     }
 
     log_rows = []
@@ -359,7 +359,7 @@ def export_xlsx(rows):
         try:
             with open(LOG_FILE, "r", newline="") as f:
                 reader = csv.reader(f, delimiter="-")
-                next(reader, None)  
+                next(reader, None)   # skip header
                 log_rows = list(reader)
         except OSError:
             pass
@@ -413,9 +413,14 @@ def export_xlsx(rows):
         sys.exit(EXIT_FILE_ERROR)
 
     import subprocess
-    recalc_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recalc.py")
-    if os.path.exists(recalc_script):
-        subprocess.run([sys.executable, recalc_script, EXPORT_FILE], check=False)
+    abs_export = os.path.abspath(EXPORT_FILE)
+    export_dir = os.path.dirname(abs_export)
+    result = subprocess.run(
+        ["libreoffice", "--headless", "--convert-to", "xlsx", "--outdir", export_dir, abs_export],
+        capture_output=True
+    )
+    if result.returncode != 0:
+        print("Warning: LibreOffice conversion step failed, file may not open in all apps.", file=sys.stderr)
 
     print(f"Exported to '{EXPORT_FILE}' - Finance sheet ({len(data_rows)} items) + Log sheet ({len(log_rows)} entries).")
 
