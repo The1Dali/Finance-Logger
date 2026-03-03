@@ -336,6 +336,7 @@ def import_from_gsheet(sheet_id, existing_rows):
         )
         service = build("sheets", "v4", credentials=creds)
         
+        # Get all sheet tabs
         spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
         sheets = spreadsheet.get('sheets', [])
         
@@ -353,40 +354,94 @@ def import_from_gsheet(sheet_id, existing_rows):
     total_skipped = 0
     total_invalid = 0
     
+    # Column name mappings (Google Sheet header -> our field)
+    # Handles variations like "Amount (TND)" -> "amount", "Date" -> "date", etc.
+    COLUMN_MAP = {
+        'type': ['type', 'entry type', 'transaction type', 'category'],
+        'description': ['description', 'desc', 'item', 'name', 'details'],
+        'amount': ['amount', 'amount (tnd)', 'amount (usd)', 'value', 'price', 'total'],
+        'date': ['date', 'day', 'time', 'when'],
+        'notes': ['notes', 'note', 'comments', 'comment', 'remarks', 'details']
+    }
+    
+    def find_column_index(headers, possible_names):
+        """Find index of column by checking multiple possible header names (case-insensitive)"""
+        headers_lower = [h.strip().lower() for h in headers]
+        for name in possible_names:
+            if name.lower() in headers_lower:
+                return headers_lower.index(name.lower())
+        return None
+    
+    def get_cell(row, idx):
+        """Safely get cell value by index"""
+        if idx is None or idx >= len(row):
+            return ""
+        return row[idx].strip() if row[idx] else ""
+    
+    # Process each tab
     for sheet in sheets:
         tab_name = sheet['properties']['title']
-        if tab_name.lower() in ['template', 'readme', 'instructions']:
+        
+        # Skip summary/log/template tabs (optional - adjust as needed)
+        skip_tabs = ['summary', 'metadata', 'template', 'readme', 'instructions', 'log', 'activity log']
+        if tab_name.lower() in skip_tabs:
             print(f"\nSkipping tab: {tab_name}")
             continue
             
         print(f"\nProcessing tab: {tab_name}")
-        
+
         try:
+            # Fetch more columns (A:F) to catch all possible data
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range=f"'{tab_name}'!A:E",  
+                range=f"'{tab_name}'!A:F",
             ).execute()
             raw_rows = result.get("values", [])
         except Exception as e:
             print(f"  Warning: could not read tab '{tab_name}': {e}")
             continue
 
-        if not raw_rows:
+        if len(raw_rows) < 3:
             print(f"  Tab is empty -- nothing to import.")
             continue
 
-        header = [h.strip().lower() for h in raw_rows[0]]
-        missing = {"type", "description", "amount", "date"} - set(header)
-        if missing:
-            print(f"  Skipping -- missing required columns: {', '.join(sorted(missing))}")
+
+        headers = None
+        data_start_idx = 0
+        
+        for i, row in enumerate(raw_rows):
+            row_text = ' '.join(row).lower()
+            # Look for rows that contain actual column headers, not just "INCOME" or "EXPENSES"
+            if any(keyword in row_text for keyword in ['description', 'amount', 'date', 'item', 'name', 'notes']):
+                headers = row
+                data_start_idx = i + 1  # Data starts after header row
+                print(f"  Found headers at row {i+1}: {headers}")
+                break
+        
+        if not headers:
+            print(f"  Could not find valid headers. First 3 rows: {raw_rows[:3]}")
             continue
 
-        def col(row_vals, name):
-            try:
-                idx = header.index(name)
-                return row_vals[idx].strip() if idx < len(row_vals) else ""
-            except ValueError:
-                return ""
+        # Map column indices
+        col_idx = {
+            'type': find_column_index(headers, COLUMN_MAP['type']),
+            'description': find_column_index(headers, COLUMN_MAP['description']),
+            'amount': find_column_index(headers, COLUMN_MAP['amount']),
+            'date': find_column_index(headers, COLUMN_MAP['date']),
+            'notes': find_column_index(headers, COLUMN_MAP['notes'])
+        }
+        
+        # Check required columns
+        required = ['description', 'amount', 'date']  # 'type' is optional (can infer from tab name)
+        missing = [f for f in required if col_idx[f] is None]
+        
+        if missing:
+            print(f"  Skipping -- could not find columns for: {', '.join(missing)}")
+            print(f"  Headers were: {headers}")
+            print(f"  Looking for: {col_idx}")
+            continue
+
+        print(f"  Column mapping: {col_idx}")
 
         existing_keys = {
             (r["type"].upper(), r["description"].strip(), r["amount"].strip(), r["date"].strip())
@@ -395,15 +450,27 @@ def import_from_gsheet(sheet_id, existing_rows):
 
         added = skipped = invalid = 0
 
-        for raw in raw_rows[1:]:
+        # Use data_start_idx instead of hardcoded 1
+        for raw in raw_rows[data_start_idx:]:
             if not any(c.strip() for c in raw):
                 continue
 
-            entry_type = col(raw, "type").upper()
-            description = col(raw, "description")
-            amount_str = col(raw, "amount")
-            date_str = col(raw, "date")
-            notes = col(raw, "notes") if "notes" in header else ""
+            entry_type = get_cell(raw, col_idx['type']).upper()
+            description = get_cell(raw, col_idx['description'])
+            amount_str = get_cell(raw, col_idx['amount'])
+            date_str = get_cell(raw, col_idx['date'])
+            notes = get_cell(raw, col_idx['notes'])
+
+            # Auto-detect type from tab name if type column is empty
+            if not entry_type:
+                if 'income' in tab_name.lower():
+                    entry_type = 'INCOME'
+                elif 'expense' in tab_name.lower():
+                    entry_type = 'EXPENSE'
+                else:
+                    print(f"    Skipped -- empty type and cannot infer from tab name: {description}")
+                    invalid += 1
+                    continue
 
             if entry_type not in ("INCOME", "EXPENSE"):
                 print(f"    Skipped -- unknown type '{entry_type}': {description}")
@@ -411,11 +478,17 @@ def import_from_gsheet(sheet_id, existing_rows):
                 continue
 
             try:
-                amount = float(amount_str)
+                # Clean amount string (remove currency symbols, commas, etc.)
+                clean_amount = amount_str.replace('TND', '').replace('USD', '').replace(',', '').replace('$', '').strip()
+                amount = float(clean_amount)
             except ValueError:
                 print(f"    Skipped -- invalid amount '{amount_str}': {description}")
                 invalid += 1
                 continue
+
+            # Auto-generate date if missing
+            if not date_str:
+                date_str = datetime.now().strftime("%d/%m/%Y")
 
             key = (entry_type, description, str(amount), date_str)
             if key in existing_keys:
