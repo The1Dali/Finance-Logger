@@ -4,6 +4,9 @@ import os
 import subprocess
 import shutil
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 FINANCE_FILE    = os.environ.get("FINANCE_FILE",        "finance.csv")
 CONFIG_FILE     = os.environ.get("CONFIG_FILE",         "config.csv")
@@ -324,94 +327,124 @@ def import_from_gsheet(sheet_id, existing_rows):
         )
         sys.exit(EXIT_FILE_ERROR)
 
-    print(f"Connecting to Google Sheets (spreadsheet: {sheet_id}, tab: '{GSHEET_TAB}')...")
+    print(f"Connecting to Google Sheets (spreadsheet: {sheet_id})...")
 
     try:
         creds = service_account.Credentials.from_service_account_file(
             GSHEET_CREDS,
             scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
         )
-        service  = build("sheets", "v4", credentials=creds)
-        result   = service.spreadsheets().values().get(
-            spreadsheetId=sheet_id,
-            range=GSHEET_TAB,
-        ).execute()
-        raw_rows = result.get("values", [])
+        service = build("sheets", "v4", credentials=creds)
+        
+        spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+        sheets = spreadsheet.get('sheets', [])
+        
+        if not sheets:
+            print("No sheets found in this spreadsheet.")
+            return
+            
+        print(f"Found {len(sheets)} tab(s): {[s['properties']['title'] for s in sheets]}")
+        
     except Exception as e:
-        print(f"Error: could not read from Google Sheets: {e}", file=sys.stderr)
+        print(f"Error: could not connect to Google Sheets: {e}", file=sys.stderr)
         sys.exit(EXIT_FILE_ERROR)
 
-    if not raw_rows:
-        print("Google Sheet is empty -- nothing to import.")
-        return
-
-    header = [h.strip().lower() for h in raw_rows[0]]
-    missing = {"type", "description", "amount", "date"} - set(header)
-    if missing:
-        print(
-            f"Error: sheet is missing required columns: {', '.join(sorted(missing))}\n"
-            "Required header columns: type, description, amount, date, notes",
-            file=sys.stderr
-        )
-        sys.exit(EXIT_BAD_ARGS)
-
-    def col(row_vals, name):
+    total_added = 0
+    total_skipped = 0
+    total_invalid = 0
+    
+    for sheet in sheets:
+        tab_name = sheet['properties']['title']
+        if tab_name.lower() in ['template', 'readme', 'instructions']:
+            print(f"\nSkipping tab: {tab_name}")
+            continue
+            
+        print(f"\nProcessing tab: {tab_name}")
+        
         try:
-            idx = header.index(name)
-            return row_vals[idx].strip() if idx < len(row_vals) else ""
-        except ValueError:
-            return ""
-
-    existing_keys = {
-        (r["type"].upper(), r["description"].strip(), r["amount"].strip(), r["date"].strip())
-        for r in existing_rows
-    }
-
-    added = skipped = invalid = 0
-
-    for raw in raw_rows[1:]:
-        if not any(c.strip() for c in raw):
+            result = service.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range=f"'{tab_name}'!A:E",  
+            ).execute()
+            raw_rows = result.get("values", [])
+        except Exception as e:
+            print(f"  Warning: could not read tab '{tab_name}': {e}")
             continue
 
-        entry_type  = col(raw, "type").upper()
-        description = col(raw, "description")
-        amount_str  = col(raw, "amount")
-        date_str    = col(raw, "date")
-        notes       = col(raw, "notes") if "notes" in header else ""
-
-        if entry_type not in ("INCOME", "EXPENSE"):
-            print(f"  Skipped -- unknown type '{entry_type}': {description}")
-            invalid += 1
+        if not raw_rows:
+            print(f"  Tab is empty -- nothing to import.")
             continue
 
-        try:
-            amount = float(amount_str)
-        except ValueError:
-            print(f"  Skipped -- invalid amount '{amount_str}': {description}")
-            invalid += 1
+        header = [h.strip().lower() for h in raw_rows[0]]
+        missing = {"type", "description", "amount", "date"} - set(header)
+        if missing:
+            print(f"  Skipping -- missing required columns: {', '.join(sorted(missing))}")
             continue
 
-        key = (entry_type, description, str(amount), date_str)
-        if key in existing_keys:
-            skipped += 1
-            continue
+        def col(row_vals, name):
+            try:
+                idx = header.index(name)
+                return row_vals[idx].strip() if idx < len(row_vals) else ""
+            except ValueError:
+                return ""
 
-        existing_rows.append({
-            "type":        entry_type,
-            "description": description,
-            "amount":      str(amount),
-            "date":        date_str,
-            "notes":       notes,
-        })
-        existing_keys.add(key)
-        log_event("IMPORT", entry_type, description, amount)
-        added += 1
-        print(f"  + {entry_type:<8} {description:<30} {amount:.3f} TND")
+        existing_keys = {
+            (r["type"].upper(), r["description"].strip(), r["amount"].strip(), r["date"].strip())
+            for r in existing_rows
+        }
 
-    if added > 0:
+        added = skipped = invalid = 0
+
+        for raw in raw_rows[1:]:
+            if not any(c.strip() for c in raw):
+                continue
+
+            entry_type = col(raw, "type").upper()
+            description = col(raw, "description")
+            amount_str = col(raw, "amount")
+            date_str = col(raw, "date")
+            notes = col(raw, "notes") if "notes" in header else ""
+
+            if entry_type not in ("INCOME", "EXPENSE"):
+                print(f"    Skipped -- unknown type '{entry_type}': {description}")
+                invalid += 1
+                continue
+
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                print(f"    Skipped -- invalid amount '{amount_str}': {description}")
+                invalid += 1
+                continue
+
+            key = (entry_type, description, str(amount), date_str)
+            if key in existing_keys:
+                skipped += 1
+                continue
+
+            existing_rows.append({
+                "type": entry_type,
+                "description": description,
+                "amount": str(amount),
+                "date": date_str,
+                "notes": notes,
+            })
+            existing_keys.add(key)
+            log_event("IMPORT", entry_type, description, amount)
+            added += 1
+            print(f"    + {entry_type:<8} {description:<30} {amount:.3f} TND")
+
+        print(f"  Tab complete: {added} added, {skipped} already existed, {invalid} invalid rows skipped.")
+        total_added += added
+        total_skipped += skipped
+        total_invalid += invalid
+
+    if total_added > 0:
         save_finance(existing_rows)
 
-    print(f"\nImport complete: {added} added, {skipped} already existed, {invalid} invalid rows skipped.")
+    print(f"\n{'='*50}")
+    print(f"Import complete across all tabs:")
+    print(f"  {total_added} added | {total_skipped} already existed | {total_invalid} invalid")
 
 
 def export_xlsx(rows):

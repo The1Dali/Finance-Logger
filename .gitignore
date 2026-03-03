@@ -2,4 +2,6 @@
 *.db
 *.xlsx
 *.json
+config.csv
 finance
+.env
