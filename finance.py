@@ -38,7 +38,8 @@ def print_help():
         "  remove income <id>                        Remove an income entry by ID.\n"
         "  remove expense <id>                       Remove an expense entry by ID.\n"
         "  balance <amount>                          Set the opening balance.\n"
-        "  list                                      Print a summary to the terminal.\n"
+        "  list                                      Print all sheets to the terminal.\n"
+        "  view [summary|income|expenses|log]        View a specific sheet (default: all).\n"
         "  export [spreadsheet_id]                   Export to .xlsx and optionally push to Google Sheets.\n"
         "  import [spreadsheet_id]                   Pull new entries from Google Sheets.\n"
         "  clear                                     Wipe all entries.\n"
@@ -103,7 +104,15 @@ def main():
                 sys.exit(EXIT_BAD_ARGS)
 
             case "list":
-                list_entries(rows)
+                view_sheet(rows, sheet=None)
+
+            case "view":
+                sheet = sys.argv[2].lower() if len(sys.argv) > 2 else None
+                valid = {"summary", "income", "expenses", "log"}
+                if sheet and sheet not in valid:
+                    print(f"Unknown sheet '{sheet}'. Choose: summary, income, expenses, log", file=sys.stderr)
+                    sys.exit(EXIT_BAD_ARGS)
+                view_sheet(rows, sheet=sheet)
 
             case "export":
                 sheet_id = sys.argv[2] if len(sys.argv) > 2 else (GSHEET_ID or None)
@@ -184,12 +193,20 @@ def save_balance(amount):
 
 
 def log_event(action, entry_type="", description="", amount=""):
-    write_header = not os.path.exists(LOG_FILE)
+    # Check if file has a valid header row (not just if it exists)
+    has_header = False
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
+                first = f.readline().strip().lower()
+            has_header = "date" in first and "action" in first
+        except OSError:
+            pass
     date_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     try:
         with open(LOG_FILE, "a", newline="") as f:
             writer = csv.writer(f)
-            if write_header:
+            if not has_header:
                 writer.writerow(["date", "action", "type", "description", "amount"])
             writer.writerow([date_str, action, entry_type, description, amount])
     except OSError as e:
@@ -254,35 +271,309 @@ def set_balance(amount_str):
     print(f"Opening balance set to {amount:.3f} TND")
 
 
-def list_entries(rows):
-    opening  = load_balance()
-    income   = [r for r in rows if r["type"].upper() == "INCOME"]
-    expenses = [r for r in rows if r["type"].upper() == "EXPENSE"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TERMINAL RENDERING  (pure ANSI — no external dependencies)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ansi(fg=None, bg=None, bold=False, dim=False, italic=False, reset=False):
+    """Build an ANSI escape sequence from hex colours and style flags."""
+    if reset:
+        return "\033[0m"
+    parts = []
+    if bold:   parts.append("1")
+    if dim:    parts.append("2")
+    if italic: parts.append("3")
+    if fg:
+        r, g, b = int(fg[0:2],16), int(fg[2:4],16), int(fg[4:6],16)
+        parts.append(f"38;2;{r};{g};{b}")
+    if bg:
+        r, g, b = int(bg[0:2],16), int(bg[2:4],16), int(bg[4:6],16)
+        parts.append(f"48;2;{r};{g};{b}")
+    return f"\033[{';'.join(parts)}m" if parts else ""
+
+R = _ansi(reset=True)   # reset shorthand
+
+def _cell(text, width, align="left", fg=None, bg=None, bold=False,
+          dim=False, italic=False, pad=1):
+    """Return a fixed-width styled cell string."""
+    text = str(text)
+    avail = width - pad * 2
+    if len(text) > avail:
+        text = text[:avail - 1] + "…"
+    if align == "right":
+        text = text.rjust(avail)
+    elif align == "center":
+        text = text.center(avail)
+    else:
+        text = text.ljust(avail)
+    text = " " * pad + text + " " * pad
+    style  = _ansi(fg=fg, bg=bg, bold=bold, dim=dim, italic=italic)
+    return f"{style}{text}{R}"
+
+def _row(*cells):
+    print("│" + "│".join(cells) + "│")
+
+def _divider(widths, char="─", left="├", mid="┼", right="┤"):
+    segs = [char * w for w in widths]
+    print(left + mid.join(segs) + right)
+
+def _top(widths):
+    segs = ["─" * w for w in widths]
+    print("┌" + "┬".join(segs) + "┐")
+
+def _bottom(widths):
+    segs = ["─" * w for w in widths]
+    print("└" + "┴".join(segs) + "┘")
+
+def _title_row(text, total_width, fg="FFFFFF", bg="1A56A0"):
+    inner = total_width - 2               # subtract the two outer │
+    styled = _cell(text, inner, align="center", fg=fg, bg=bg, bold=True, pad=2)
+    # widen cell to full inner width (already done by _cell above)
+    print("│" + styled + "│")
+
+def _section_hdr(text, total_width, fg="FFFFFF", bg="2E75C8"):
+    inner = total_width - 2
+    styled = _cell(text, inner, align="left", fg=fg, bg=bg, bold=True, pad=2)
+    print("│" + styled + "│")
+
+def _spacer_row(total_width, bg="ECF1FB"):
+    inner = total_width - 2
+    print("│" + _cell("", inner, bg=bg) + "│")
+
+def _tnd(v):
+    return f"{float(v):,.3f} TND"
+
+
+# ── SUMMARY ────────────────────────────────────────────────────────────────────
+def _sheet_summary(rows):
+    opening   = load_balance()
+    income    = [r for r in rows if r["type"].upper() == "INCOME"]
+    expenses  = [r for r in rows if r["type"].upper() == "EXPENSE"]
     total_in  = sum(float(r["amount"]) for r in income)
     total_exp = sum(float(r["amount"]) for r in expenses)
-    profit    = total_in - total_exp
-    net       = opening + profit
+    gross     = total_in - total_exp
+    exp_ratio = (total_exp / total_in * 100) if total_in else 0.0
+    net       = opening + gross
+    export_dt = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    print(f"\n{'SUMMARY':=<55}")
-    print(f"  {'Opening Balance':<30} {opening:>10.3f} TND")
-    print(f"  {'Total Income':<30} {total_in:>10.3f} TND")
-    print(f"  {'Total Expenses':<30} {total_exp:>10.3f} TND")
-    print(f"  {'Gross Profit':<30} {profit:>10.3f} TND")
-    print(f"  {'Net Balance':<30} {net:>10.3f} TND")
+    # Column widths (inner, including padding)
+    W = [36, 22, 24]
+    total_w = sum(W) + len(W) + 1   # borders
 
-    if income:
-        print(f"\n{'INCOME':=<55}")
-        print(f"  {'#':<5} {'Description':<25} {'Amount':>10}  {'Date':<12}  Notes")
-        print(f"  {'-'*70}")
-        for i, r in enumerate(income, 1):
-            print(f"  {i:<5} {r['description']:<25} {float(r['amount']):>10.3f}  {r['date']:<12}  {r.get('notes', '')}")
+    def s_row(label, value, context,
+              label_fg, label_bg, val_fg, val_bg, ctx_fg, ctx_bg,
+              bold_val=False):
+        _row(
+            _cell(f"  {label}", W[0], fg=label_fg, bg=label_bg, bold=True),
+            _cell(value, W[1], align="right", fg=val_fg, bg=val_bg, bold=bold_val),
+            _cell(context, W[2], align="center", fg=ctx_fg, bg=ctx_bg),
+        )
 
-    if expenses:
-        print(f"\n{'EXPENSES':=<55}")
-        print(f"  {'#':<5} {'Description':<25} {'Amount':>10}  {'Date':<12}  Notes")
-        print(f"  {'-'*70}")
-        for i, r in enumerate(expenses, 1):
-            print(f"  {i:<5} {r['description']:<25} {float(r['amount']):>10.3f}  {r['date']:<12}  {r.get('notes', '')}")
+    print()
+    _top(W)
+    _title_row("FINANCIAL SUMMARY", total_w, fg="FFFFFF", bg="1A56A0")
+    _divider(W, "─")
+    _spacer_row(total_w, bg="ECF1FB")
+    _section_hdr("  BALANCE OVERVIEW", total_w, fg="FFFFFF", bg="2E75C8")
+
+    s_row("Opening Balance", _tnd(opening),  "Starting funds",
+          "0D2B5E","D6E4F7","0D2B5E","D6E4F7","0D2B5E","D6E4F7")
+
+    inc_lbl = f"{len(income)} {'entry' if len(income)==1 else 'entries'}"
+    s_row("Total Income", _tnd(total_in), inc_lbl,
+          "0B3D1E","D4EDDA","0B3D1E","D4EDDA","0B3D1E","D4EDDA")
+
+    exp_lbl = f"{len(expenses)} {'entry' if len(expenses)==1 else 'entries'}"
+    s_row("Total Expenses", _tnd(total_exp), exp_lbl,
+          "5C0A0A","F8D7DA","5C0A0A","F8D7DA","5C0A0A","F8D7DA")
+
+    _spacer_row(total_w, bg="ECF1FB")
+    _section_hdr("  RESULTS", total_w, fg="FFFFFF", bg="2E75C8")
+
+    gross_ctx = "Surplus ▲" if gross >= 0 else "Deficit ▼"
+    s_row("Gross Profit",  _tnd(gross),         gross_ctx,
+          "0D2B5E","D6E4F7","0D2B5E","D6E4F7","0D2B5E","D6E4F7")
+    s_row("Expense Ratio", f"{exp_ratio:.1f}%", f"{exp_ratio:.1f}% of income",
+          "0D2B5E","D6E4F7","0D2B5E","D6E4F7","0D2B5E","D6E4F7")
+    s_row("Total Profit",  _tnd(gross),         gross_ctx,
+          "0D2B5E","D6E4F7","0D2B5E","D6E4F7","0D2B5E","D6E4F7")
+
+    net_ctx = "Positive ✔" if net >= 0 else "Negative ✖"
+    s_row("Net Balance", _tnd(net), net_ctx,
+          "FFFFFF","2E75C8","FFFFFF","2E75C8","FFFFFF","2E75C8", bold_val=True)
+
+    _spacer_row(total_w, bg="ECF1FB")
+    _section_hdr("  METADATA", total_w, fg="FFFFFF", bg="7A90B8")
+
+    s_row("Total Entries", str(len(rows)),
+          f"{len(income)} income, {len(expenses)} expense",
+          "3A4A6B","EEF2FA","3A4A6B","EEF2FA","3A4A6B","EEF2FA")
+    s_row("Last Updated", export_dt, "Export timestamp",
+          "3A4A6B","EEF2FA","3A4A6B","EEF2FA","3A4A6B","EEF2FA")
+
+    _bottom(W)
+
+
+# ── DATA TABLE (Income / Expenses) ─────────────────────────────────────────────
+def _sheet_data(rows, entry_type, title, title_bg, hdr_bg,
+                id_fg, total_fg, total_bg):
+    typed = [r for r in rows if r["type"].upper() == entry_type]
+    W     = [5, 30, 18, 13, 22]   # ID | Description | Amount | Date | Notes
+    total_w = sum(W) + len(W) + 1
+
+    print()
+    _top(W)
+    _title_row(title, total_w, fg="FFFFFF", bg=title_bg)
+    _divider(W, "─")
+    _row(
+        _cell("ID",           W[0], align="center", fg="FFFFFF", bg=hdr_bg, bold=True),
+        _cell("Description",  W[1], align="left",   fg="FFFFFF", bg=hdr_bg, bold=True),
+        _cell("Amount (TND)", W[2], align="right",  fg="FFFFFF", bg=hdr_bg, bold=True),
+        _cell("Date",         W[3], align="center", fg="FFFFFF", bg=hdr_bg, bold=True),
+        _cell("Notes",        W[4], align="left",   fg="FFFFFF", bg=hdr_bg, bold=True),
+    )
+    _divider(W, "─")
+
+    if not typed:
+        _row(
+            _cell("",  W[0]),
+            _cell("No entries yet.", W[1], italic=True, dim=True),
+            _cell("",  W[2]),
+            _cell("",  W[3]),
+            _cell("",  W[4]),
+        )
+    else:
+        total = 0.0
+        for i, r in enumerate(typed):
+            alt = i % 2 == 1
+            bg  = "EEF3FC" if alt else "FFFFFF"
+            amt = float(r["amount"])
+            total += amt
+            _row(
+                _cell(str(i+1),         W[0], align="center", fg=id_fg,   bg=bg),
+                _cell(r["description"], W[1], align="left",   fg="1A1A2E",bg=bg),
+                _cell(_tnd(amt),        W[2], align="right",  fg=total_fg,bg=bg, bold=True),
+                _cell(r["date"],        W[3], align="center", fg="1A1A2E",bg=bg),
+                _cell(r.get("notes",""),W[4], align="left",   fg="4A4A4A",bg=bg, italic=True),
+            )
+        _divider(W, "─")
+        _row(
+            _cell("",       W[0], bg=total_bg),
+            _cell("TOTAL",  W[1], align="left",  fg=total_fg, bg=total_bg, bold=True),
+            _cell(_tnd(total), W[2], align="right", fg=total_fg, bg=total_bg, bold=True),
+            _cell("",       W[3], bg=total_bg),
+            _cell("",       W[4], bg=total_bg),
+        )
+
+    _bottom(W)
+
+
+def _sheet_income(rows):
+    _sheet_data(rows, "INCOME",  "INCOME",
+                title_bg="1A7A3A", hdr_bg="28A745",
+                id_fg="1A7A3A",   total_fg="0B3D1E", total_bg="D4EDDA")
+
+def _sheet_expenses(rows):
+    _sheet_data(rows, "EXPENSE", "EXPENSES",
+                title_bg="B52525", hdr_bg="DC3545",
+                id_fg="B52525",   total_fg="5C0A0A", total_bg="F8D7DA")
+
+
+_LOG_FIELDS = ["date", "action", "type", "description", "amount"]
+
+def _read_log(newest_first=False):
+    """Read log.csv robustly, handling missing/malformed headers."""
+    if not os.path.exists(LOG_FILE):
+        return []
+    try:
+        with open(LOG_FILE, "r", newline="", encoding="utf-8-sig") as f:
+            raw = list(csv.reader(f))
+        if not raw:
+            return []
+        first = [c.strip().lower() for c in raw[0]]
+        if "date" in first and "action" in first:
+            fields, data = first, raw[1:]
+        else:
+            fields, data = _LOG_FIELDS, raw
+        rows = [
+            {fields[i]: (row[i] if i < len(row) else "")
+             for i in range(len(fields))}
+            for row in data if any(c.strip() for c in row)
+        ]
+        return list(reversed(rows)) if newest_first else rows
+    except OSError:
+        return []
+
+
+# ── ACTIVITY LOG ───────────────────────────────────────────────────────────────
+def _sheet_log():
+    ACTION_COLORS = {
+        "ADD":     ("155724","D4EDDA"),
+        "REMOVE":  ("721C24","F8D7DA"),
+        "CLEAR":   ("856404","FFF3CD"),
+        "BALANCE": ("0D2B5E","D6E4F7"),
+        "IMPORT":  ("4A0E72","E8D5F5"),
+        "EXPORT":  ("1A5276","D6EAF8"),
+    }
+
+    log_rows = _read_log(newest_first=True)
+
+    W     = [19, 10, 9, 30, 18]
+    total_w = sum(W) + len(W) + 1
+
+    print()
+    _top(W)
+    _title_row("ACTIVITY LOG", total_w, fg="FFFFFF", bg="2C2C2C")
+    _divider(W, "─")
+    _row(
+        _cell("Date",        W[0], align="center", fg="FFFFFF", bg="4A4A4A", bold=True),
+        _cell("Action",      W[1], align="center", fg="FFFFFF", bg="4A4A4A", bold=True),
+        _cell("Type",        W[2], align="center", fg="FFFFFF", bg="4A4A4A", bold=True),
+        _cell("Description", W[3], align="left",   fg="FFFFFF", bg="4A4A4A", bold=True),
+        _cell("Amount",      W[4], align="right",  fg="FFFFFF", bg="4A4A4A", bold=True),
+    )
+    _divider(W, "─")
+
+    if not log_rows:
+        _row(
+            _cell("", W[0]),
+            _cell("No log entries yet.", W[1] + W[2] + W[3] + 3, italic=True, dim=True),
+            _cell("", W[4]),
+        )
+    else:
+        for i, r in enumerate(log_rows):
+            alt    = i % 2 == 1
+            bg_row = "EEF3FC" if alt else "FFFFFF"
+            action = r.get("action","").strip().upper()
+            afg, abg = ACTION_COLORS.get(action, ("444444","F5F5F5"))
+            amt_str  = r.get("amount","").strip()
+            try:
+                amt_disp = _tnd(float(amt_str))
+            except (ValueError, TypeError):
+                amt_disp = amt_str
+
+            _row(
+                _cell(r.get("date",""),        W[0], align="center", fg="1A1A2E", bg=bg_row),
+                _cell(action,                  W[1], align="center", fg=afg,     bg=abg,     bold=True),
+                _cell(r.get("type",""),        W[2], align="center", fg="1A1A2E",bg=bg_row),
+                _cell(r.get("description",""), W[3], align="left",   fg="1A1A2E",bg=bg_row),
+                _cell(amt_disp,                W[4], align="right",  fg="1A1A2E",bg=bg_row),
+            )
+
+    _bottom(W)
+
+
+# ── DISPATCHER ─────────────────────────────────────────────────────────────────
+def view_sheet(rows, sheet=None):
+    if sheet in (None, "summary"):
+        _sheet_summary(rows)
+    if sheet in (None, "income"):
+        _sheet_income(rows)
+    if sheet in (None, "expenses"):
+        _sheet_expenses(rows)
+    if sheet in (None, "log"):
+        _sheet_log()
     print()
 
 
@@ -503,31 +794,31 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
 
     # ── Palette ───────────────────────────────────────────────────────────
     FONT        = "Arial"
-    WHITE       = "FFFFFF"
-    BODY_ALT    = "EEF3FC"
-    BORDER_CLR  = "C5D0E8"
+    WHITE       = "FFFFFFFF"
+    BODY_ALT    = "FFEEF3FC"
+    BORDER_CLR  = "FFC5D0E8"
 
-    NAVY        = "1B2A6B"   # tab / title bar
-    BLUE_DARK   = "1A56A0"   # summary title
-    BLUE_MID    = "2E75C8"   # section headers
-    BLUE_LIGHT  = "D6E4F7"   # balance rows bg
-    BLUE_FG     = "0D2B5E"   # balance rows text
+    NAVY        = "FF1B2A6B"   # tab / title bar
+    BLUE_DARK   = "FF1A56A0"   # summary title
+    BLUE_MID    = "FF2E75C8"   # section headers
+    BLUE_LIGHT  = "FFD6E4F7"   # balance rows bg
+    BLUE_FG     = "FF0D2B5E"   # balance rows text
 
-    GREEN_DARK  = "1A7A3A"   # income tab
-    GREEN_MID   = "28A745"   # income header
-    GREEN_LIGHT = "D4EDDA"   # income summary row
-    GREEN_FG    = "0B3D1E"
+    GREEN_DARK  = "FF1A7A3A"   # income tab
+    GREEN_MID   = "FF28A745"   # income header
+    GREEN_LIGHT = "FFD4EDDA"   # income summary row
+    GREEN_FG    = "FF0B3D1E"
 
-    RED_DARK    = "B52525"   # expense tab
-    RED_MID     = "DC3545"   # expense header
-    RED_LIGHT   = "F8D7DA"   # expense summary row
-    RED_FG      = "5C0A0A"
+    RED_DARK    = "FFB52525"   # expense tab
+    RED_MID     = "FFDC3545"   # expense header
+    RED_LIGHT   = "FFF8D7DA"   # expense summary row
+    RED_FG      = "FF5C0A0A"
 
-    CHARCOAL    = "2C2C2C"   # log title
-    GREY_DARK   = "4A4A4A"   # log header
-    META_BG     = "EEF2FA"
-    META_FG     = "3A4A6B"
-    META_ACC    = "7A90B8"
+    CHARCOAL    = "FF2C2C2C"   # log title
+    GREY_DARK   = "FF4A4A4A"   # log header
+    META_BG     = "FFEEF2FA"
+    META_FG     = "FF3A4A6B"
+    META_ACC    = "FF7A90B8"
 
     TND_FMT     = '#,##0.000 "TND"'
     PCT_FMT     = "0.0%"
@@ -535,11 +826,17 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     # ── Style helpers ─────────────────────────────────────────────────────
     wb = Workbook()
 
+    def argb(hex_color):
+        """Ensure 8-char ARGB with FF (fully opaque) alpha.
+        openpyxl pads 6-char hex with 00 (transparent) by default."""
+        h = hex_color.lstrip("#")
+        return h if len(h) == 8 else "FF" + h
+
     def solid(hex_color):
-        return PatternFill("solid", fgColor=hex_color)
+        return PatternFill("solid", fgColor=argb(hex_color))
 
     def side(style, color):
-        return Side(style=style, color=color)
+        return Side(style=style, color=argb(color))
 
     def box(color, weight="thin"):
         s = side(weight, color)
@@ -585,7 +882,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
 
     def dat(cell, value, align="left", alt=False, fmt=None):
         cell.value     = value
-        cell.font      = Font(name=FONT, size=10, color="1A1A2E")
+        cell.font      = Font(name=FONT, size=10, color=argb("FF1A1A2E"))
         cell.fill      = solid(BODY_ALT if alt else WHITE)
         cell.alignment = Alignment(horizontal=align, vertical="center")
         cell.border    = box(BORDER_CLR)
@@ -630,9 +927,9 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ss.title = "Summary"
     ss.sheet_properties.tabColor = NAVY
     ss.sheet_view.showGridLines  = False
-    ss.column_dimensions["A"].width = 34
-    ss.column_dimensions["B"].width = 22
-    ss.column_dimensions["C"].width = 22
+    ss.column_dimensions["A"].width = 38
+    ss.column_dimensions["B"].width = 26
+    ss.column_dimensions["C"].width = 28
 
     # Title
     title_cell(ss, "A1:C1", "FINANCIAL SUMMARY", BLUE_DARK, row_h=44)
@@ -706,13 +1003,14 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     s_row(6,  "Total Expenses",  f"=SUM({exp_ref})",   exp_label,                                      RED_LIGHT,  RED_FG,  RED_DARK)
     spacer(7)
     section_hdr(8, "  RESULTS", BLUE_MID)
-    s_row(9,  "Gross Profit",    "=B5-B6",             '=IF(B9>=0,"Surplus \u25b2","Deficit \u25bc")',  BLUE_LIGHT, BLUE_FG, BLUE_DARK, fmt=TND_FMT)
-    s_row(10, "Expense Ratio",   "=IFERROR(B6/B5,0)",  '=IFERROR(TEXT(B10,"0.0%")&" of income","N/A")',BLUE_LIGHT, BLUE_FG, BLUE_DARK, fmt=PCT_FMT)
-    s_row(11, "Net Balance",     "=B4+B9",             '=IF(B11>=0,"Positive \u2714","Negative \u2716")',BLUE_MID, WHITE,   BLUE_DARK, bold_val=True, fmt=TND_FMT)
-    spacer(12)
-    section_hdr(13, "  METADATA", META_ACC)
-    s_row(14, "Total Entries",   n_inc + n_exp,        f"{n_inc} income, {n_exp} expense",              META_BG, META_FG, META_ACC, fmt="General")
-    s_row(15, "Last Exported",   export_date,          "Export timestamp",                              META_BG, META_FG, META_ACC, text_val=True)
+    s_row(9,  "Gross Profit",    "=B5-B6",             '=IF(B9>=0,"Surplus \u25b2","Deficit \u25bc")',   BLUE_LIGHT, BLUE_FG, BLUE_DARK, fmt=TND_FMT)
+    s_row(10, "Expense Ratio",   "=IFERROR(B6/B5,0)",  '=IFERROR(TEXT(B10,"0.0%")&" of income","N/A")',  BLUE_LIGHT, BLUE_FG, BLUE_DARK, fmt=PCT_FMT)
+    s_row(11, "Total Profit",    "=B9",                '=IF(B11>=0,"Surplus \u25b2","Deficit \u25bc")',   BLUE_LIGHT, BLUE_FG, BLUE_DARK, fmt=TND_FMT)
+    s_row(12, "Net Balance",     "=B4+B11",            '=IF(B12>=0,"Positive \u2714","Negative \u2716")', BLUE_MID,   WHITE,   BLUE_DARK, bold_val=True, fmt=TND_FMT)
+    spacer(13)
+    section_hdr(14, "  METADATA", META_ACC)
+    s_row(15, "Total Entries",   n_inc + n_exp,        f"total ({n_inc} income, {n_exp} expense)",        META_BG, META_FG, META_ACC, fmt="General")
+    s_row(16, "Last Exported",   export_date,          "Export timestamp",                                META_BG, META_FG, META_ACC, text_val=True)
 
     # ══════════════════════════════════════════════════════════════════════
     # INCOME SHEET
@@ -720,11 +1018,11 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_inc = wb.create_sheet("Income")
     ws_inc.sheet_properties.tabColor = GREEN_DARK
     ws_inc.sheet_view.showGridLines  = False
-    ws_inc.column_dimensions["A"].width = 6
-    ws_inc.column_dimensions["B"].width = 32
-    ws_inc.column_dimensions["C"].width = 18
-    ws_inc.column_dimensions["D"].width = 14
-    ws_inc.column_dimensions["E"].width = 28
+    ws_inc.column_dimensions["A"].width = 7
+    ws_inc.column_dimensions["B"].width = 36
+    ws_inc.column_dimensions["C"].width = 20
+    ws_inc.column_dimensions["D"].width = 16
+    ws_inc.column_dimensions["E"].width = 32
     ws_inc.row_dimensions[2].height = 6
     ws_inc.row_dimensions[3].height = 22
     ws_inc.freeze_panes = "A4"
@@ -753,11 +1051,11 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_exp = wb.create_sheet("Expenses")
     ws_exp.sheet_properties.tabColor = RED_DARK
     ws_exp.sheet_view.showGridLines  = False
-    ws_exp.column_dimensions["A"].width = 6
-    ws_exp.column_dimensions["B"].width = 32
-    ws_exp.column_dimensions["C"].width = 18
-    ws_exp.column_dimensions["D"].width = 14
-    ws_exp.column_dimensions["E"].width = 28
+    ws_exp.column_dimensions["A"].width = 7
+    ws_exp.column_dimensions["B"].width = 36
+    ws_exp.column_dimensions["C"].width = 20
+    ws_exp.column_dimensions["D"].width = 16
+    ws_exp.column_dimensions["E"].width = 32
     ws_exp.row_dimensions[2].height = 6
     ws_exp.row_dimensions[3].height = 22
     ws_exp.freeze_panes = "A4"
@@ -786,11 +1084,11 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_log = wb.create_sheet("Log")
     ws_log.sheet_properties.tabColor = CHARCOAL
     ws_log.sheet_view.showGridLines  = False
-    ws_log.column_dimensions["A"].width = 20
-    ws_log.column_dimensions["B"].width = 12
-    ws_log.column_dimensions["C"].width = 10
-    ws_log.column_dimensions["D"].width = 32
-    ws_log.column_dimensions["E"].width = 18
+    ws_log.column_dimensions["A"].width = 24
+    ws_log.column_dimensions["B"].width = 14
+    ws_log.column_dimensions["C"].width = 12
+    ws_log.column_dimensions["D"].width = 38
+    ws_log.column_dimensions["E"].width = 22
     ws_log.row_dimensions[2].height = 6
     ws_log.row_dimensions[3].height = 22
     ws_log.freeze_panes = "A4"
@@ -808,29 +1106,16 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         "BALANCE": "D6E4F7", "IMPORT":  "E8D5F5", "EXPORT":  "D6EAF8",
     }
     ACTION_FG = {
-        "ADD":     "155724", "REMOVE":  "721C24", "CLEAR":   "856404",
-        "BALANCE": "0D2B5E", "IMPORT":  "4A0E72", "EXPORT":  "1A5276",
+        "ADD":     "FF155724", "REMOVE":  "FF721C24", "CLEAR":   "FF856404",
+        "BALANCE": "FF0D2B5E", "IMPORT":  "FF4A0E72", "EXPORT":  "FF1A5276",
     }
 
-    # ── Read log.csv defensively ──────────────────────────────────────────
-    # Strip BOM, strip whitespace from keys, handle both CRLF and LF.
-    log_rows = []
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r", newline="", encoding="utf-8-sig") as f:
-                raw_rows = list(csv.DictReader(f))
-            # Normalise keys: strip surrounding whitespace/quotes/BOM residue
-            log_rows = [
-                {k.strip().strip('"').strip("'"): v
-                 for k, v in row.items() if k is not None}
-                for row in raw_rows
-            ]
-        except OSError:
-            pass
+    # ── Read log.csv via shared helper (handles missing/corrupt headers) ──
+    log_rows = _read_log(newest_first=False)
 
     if not log_rows:
         c = ws_log.cell(row=4, column=1, value="No log entries yet.")
-        c.font      = Font(name=FONT, size=10, color="999999", italic=True)
+        c.font      = Font(name=FONT, size=10, color=argb("FF999999"), italic=True)
         c.alignment = Alignment(horizontal="left", vertical="center")
     else:
         for i, r in enumerate(log_rows):
@@ -838,7 +1123,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             alt    = i % 2 == 1
             action = r.get("action", "").strip().upper()
             abg    = ACTION_BG.get(action, WHITE)
-            afg    = ACTION_FG.get(action, "444444")
+            afg    = ACTION_FG.get(action, "FF444444")
             ws_log.row_dimensions[row].height = 20
 
             dat(ws_log.cell(row=row, column=1), r.get("date", "").strip(),        align="center", alt=alt)
@@ -865,14 +1150,21 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         print(f"Error: could not save '{EXPORT_FILE}': {e}", file=sys.stderr)
         sys.exit(EXIT_FILE_ERROR)
 
-    lo = shutil.which("libreoffice") or shutil.which("soffice")
-    if lo:
-        abs_path   = os.path.abspath(EXPORT_FILE)
-        export_dir = os.path.dirname(abs_path) or "."
-        subprocess.run(
-            [lo, "--headless", "--convert-to", "xlsx", "--outdir", export_dir, abs_path],
-            capture_output=True,
-        )
+    # Post-process: openpyxl pads short hex with '00' (transparent) alpha.
+    # Walk every XML file in the zip and replace any rgb="00XXXXXX" with
+    # rgb="FFXXXXXX" so all colours are fully opaque.
+    import zipfile as _zf, re as _re, io as _io, shutil as _sh
+    _src = EXPORT_FILE
+    _tmp = EXPORT_FILE + ".tmp"
+    with _zf.ZipFile(_src, "r") as zin, _zf.ZipFile(_tmp, "w", _zf.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.endswith(".xml"):
+                text = data.decode("utf-8")
+                text = _re.sub(r'rgb="00([0-9A-Fa-f]{6})"', lambda m: 'rgb="FF' + m.group(1) + '"', text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    _sh.move(_tmp, _src)
 
     print(f"Exported '{EXPORT_FILE}' — Summary | Income ({n_inc}) | Expenses ({n_exp}) | Log ({len(log_rows)}).")
 
@@ -911,10 +1203,11 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ["RESULTS", "", ""],
             ["Gross Profit",  gross,    "Surplus \u25b2" if gross >= 0 else "Deficit \u25bc"],
             ["Expense Ratio", exp_pct,  "of income"],
+            ["Total Profit",  gross,    "Surplus \u25b2" if gross >= 0 else "Deficit \u25bc"],
             ["Net Balance",   net,      "Positive \u2714" if net >= 0 else "Negative \u2716"],
             ["", "", ""],
             ["METADATA", "", ""],
-            ["Total Entries", n_inc + n_exp, f"{n_inc} income, {n_exp} expense"],
+            ["Total Entries", n_inc + n_exp, f"total ({n_inc} income, {n_exp} expense)"],
             ["Last Exported", export_date,   ""],
         ]
 
