@@ -884,7 +884,7 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
     # ── EXPENSES ─────────────────────────────────────────────────────────
     sid = tab_ids["Expenses"]
     reqs += [
-        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 145), col_w(sid, 2, 3, 260),
+        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
         col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
         row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
         rc(sid, 0, 1, 0, 5, title_fmt("B52525"), FULL),
@@ -1162,8 +1162,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_exp.sheet_properties.tabColor = RED_DARK
     ws_exp.sheet_view.showGridLines  = False
     ws_exp.column_dimensions["A"].width =  7
-    ws_exp.column_dimensions["B"].width = 20
-    ws_exp.column_dimensions["C"].width = 36
+    ws_exp.column_dimensions["B"].width = 36
+    ws_exp.column_dimensions["C"].width = 20
     ws_exp.column_dimensions["D"].width = 18
     ws_exp.column_dimensions["E"].width = 44
     ws_exp.row_dimensions[2].height = 6
@@ -1171,7 +1171,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_exp.freeze_panes = "A4"
     title_cell(ws_exp, "A1:E1", "EXPENSES", RED_DARK, row_h=40)
     for col, (text, align) in enumerate([
-        ("ID","center"),("Amount (TND)","center"),("Description","center"),("Date","center"),("Notes","center")
+        ("ID","center"),("Description","center"),("Amount (TND)","center"),("Date","center"),("Notes","center")
     ], 1):
         hdr(ws_exp.cell(row=3, column=col), text, RED_MID, align=align)
     for i, r in enumerate(expense_rows):
@@ -1179,8 +1179,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         alt = i % 2 == 1
         ws_exp.row_dimensions[row].height = 22
         dat(ws_exp.cell(row=row, column=1), i+1,               align="center", alt=alt)
-        dat(ws_exp.cell(row=row, column=2), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
-        dat(ws_exp.cell(row=row, column=3), r["description"],  align="center", alt=alt)
+        dat(ws_exp.cell(row=row, column=2), r["description"],  align="center", alt=alt)
+        dat(ws_exp.cell(row=row, column=3), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
         dat(ws_exp.cell(row=row, column=4), r["date"],         align="center", alt=alt)
         dat(ws_exp.cell(row=row, column=5), r.get("notes",""), align="center", alt=alt, wrap=True)
 
@@ -1291,10 +1291,10 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         expense_data = [
             ["EXPENSES", "", "", "", ""],
             ["", "", "", "", ""],
-            ["ID", "Amount (TND)", "Description", "Date", "Notes"],
+            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
         ]
         for i, r in enumerate(expense_rows, 1):
-            expense_data.append([i, float(r["amount"]), r["description"], r["date"], r.get("notes","")])
+            expense_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
 
         log_data = [
             ["ACTIVITY LOG", "", "", "", ""],
