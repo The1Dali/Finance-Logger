@@ -219,17 +219,36 @@ def add_entry(entry_type, description, amount_str, rows, notes="", date_str=None
     if date_str is None:
         date_str = datetime.now().strftime("%d/%m/%Y")
 
-    rows.append({
-        "type":        entry_type,
-        "description": description,
-        "amount":      str(amount),
-        "date":        date_str,
-        "notes":       notes,
-    })
-    save_finance(rows)
-    log_event("ADD", entry_type, description, amount)
-    note_suffix = f"  [{notes}]" if notes else ""
-    print(f"Added {entry_type.lower()} '{description}': {amount:.3f} TND{note_suffix}")
+    # If same type + description exists, append amount instead of new row
+    existing = next(
+        (r for r in rows
+         if r["type"].upper() == entry_type.upper()
+         and r["description"].strip().lower() == description.strip().lower()),
+        None
+    )
+
+    if existing:
+        old_amount = float(existing["amount"])
+        new_amount = old_amount + amount
+        existing["amount"] = str(new_amount)
+        if notes:
+            existing["notes"] = (existing["notes"] + "; " + notes).strip("; ")
+        existing["date"] = date_str
+        save_finance(rows)
+        log_event("ADD", entry_type, description, amount)
+        print(f"Updated {entry_type.lower()} '{description}': {old_amount:.3f} + {amount:.3f} = {new_amount:.3f} TND")
+    else:
+        rows.append({
+            "type":        entry_type,
+            "description": description,
+            "amount":      str(amount),
+            "date":        date_str,
+            "notes":       notes,
+        })
+        save_finance(rows)
+        log_event("ADD", entry_type, description, amount)
+        note_suffix = f"  [{notes}]" if notes else ""
+        print(f"Added {entry_type.lower()} '{description}': {amount:.3f} TND{note_suffix}")
 
 
 def remove_entry(entry_type, id_str, rows):
@@ -649,8 +668,20 @@ def import_from_gsheet(sheet_id, existing_rows):
             print(f"  Skipping -- missing required columns: {', '.join(missing)}")
             continue
 
+        def _norm_date(d):
+            """Strip time portion from any date string, keep only DD/MM/YYYY."""
+            return d.strip().split(" ")[0].split("T")[0] if d else ""
+
+        def _norm_amount(a):
+            """Normalize amount string to float string for reliable key comparison."""
+            try:
+                return str(float(a.replace("TND","").replace("USD","").replace(",","").replace("$","").strip()))
+            except (ValueError, AttributeError):
+                return a.strip()
+
         existing_keys = {
-            (r["type"].upper(), r["description"].strip(), r["amount"].strip(), r["date"].strip())
+            (r["type"].upper(), r["description"].strip().lower(),
+             _norm_amount(r["amount"]), _norm_date(r["date"]))
             for r in existing_rows
         }
         added = skipped = invalid = 0
@@ -661,7 +692,7 @@ def import_from_gsheet(sheet_id, existing_rows):
             entry_type  = _get_cell(raw, col_idx["type"]).upper()
             description = _get_cell(raw, col_idx["description"])
             amount_str  = _get_cell(raw, col_idx["amount"])
-            date_str    = _get_cell(raw, col_idx["date"])
+            date_str    = _norm_date(_get_cell(raw, col_idx["date"]))
             notes       = _get_cell(raw, col_idx["notes"])
 
             if not entry_type:
@@ -682,7 +713,7 @@ def import_from_gsheet(sheet_id, existing_rows):
             if not date_str:
                 date_str = datetime.now().strftime("%d/%m/%Y")
 
-            key = (entry_type, description, str(amount), date_str)
+            key = (entry_type, description.strip().lower(), str(amount), date_str)
             if key in existing_keys:
                 skipped += 1; continue
 
@@ -1256,8 +1287,6 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ["Total Entries", n_inc + n_exp, f"total ({n_inc} income, {n_exp} expense)"],
             ["Last Exported", export_date,   ""],
         ]
-        # Each data array must include title (row 1) + spacer (row 2) + headers (row 3)
-        # so the values write aligns with the batchUpdate format requests.
         income_data  = [
             ["INCOME", "", "", "", ""],
             ["", "", "", "", ""],
@@ -1289,7 +1318,6 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         tabs_data = {"Summary": summary_data, "Income": income_data,
                      "Expenses": expense_data, "Log": log_data}
 
-        # Delete + recreate tabs cleanly
         spreadsheet  = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
         existing_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
                         for s in spreadsheet.get("sheets", [])}
@@ -1321,12 +1349,10 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             body={"requests": [{"deleteSheet": {"sheetId": tmp_id}}]},
         ).execute()
 
-        # Collect new tab IDs
         final      = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
         tab_ids    = {s["properties"]["title"]: s["properties"]["sheetId"]
                       for s in final["sheets"] if s["properties"]["title"] in tabs_data}
 
-        # Write data
         for tab_name, data in tabs_data.items():
             result = service.spreadsheets().values().update(
                 spreadsheetId=gsheet_id,
@@ -1336,10 +1362,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ).execute()
             print(f"  \u2713 {tab_name}: {result.get('updatedCells', 0)} cells written")
 
-        # Apply formatting via batchUpdate
         print("  Applying formatting...")
         fmt_requests = _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows)
-        # Send in chunks of 500 to stay well within API limits
         chunk = 500
         for i in range(0, len(fmt_requests), chunk):
             service.spreadsheets().batchUpdate(
