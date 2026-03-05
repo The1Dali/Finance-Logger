@@ -907,21 +907,20 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
     ]
     for i, r in enumerate(log_rows):
         ri     = 3 + i
-        bg     = "EEF3FC" if i % 2 == 1 else "FFFFFF"
         action = r.get("action","").strip().upper()
         abg    = ACTION_BG.get(action, "F5F5F5")
         afg    = ACTION_FG.get(action, "444444")
         reqs += [
             row_h(sid, ri, ri+1, 22),
-            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),   # Date
-            rc(sid, ri, ri+1, 1, 2,                                          # Action badge
+            rc(sid, ri, ri+1, 0, 1, cell_fmt("FFFFFF", align="CENTER"), FULL),  # Date
+            rc(sid, ri, ri+1, 1, 2,                                               # Action badge
                {"backgroundColor": color(abg),
                 "textFormat": txt(afg, bold=True, size=9),
                 "horizontalAlignment": "CENTER",
                 "verticalAlignment": "MIDDLE"}, FULL),
-            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),   # Type
-            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="LEFT"),   FULL),   # Description
-            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="RIGHT"),  FULL),   # Amount
+            rc(sid, ri, ri+1, 2, 3, cell_fmt("FFFFFF", align="CENTER"), FULL),  # Type
+            rc(sid, ri, ri+1, 3, 4, cell_fmt("FFFFFF", align="LEFT"),   FULL),  # Description
+            rc(sid, ri, ri+1, 4, 5, cell_fmt("FFFFFF", align="RIGHT"),  FULL),  # Amount
         ]
 
     return reqs
@@ -1192,22 +1191,21 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     else:
         for i, r in enumerate(log_rows):
             row    = i + DATA_START
-            alt    = i % 2 == 1
             action = r.get("action","").strip().upper()
             abg    = ACTION_BG.get(action, "F5F5F5")
             afg    = ACTION_FG.get(action, "444444")
             ws_log.row_dimensions[row].height = 22
-            dat(ws_log.cell(row=row, column=1), r.get("date","").strip(),        align="center", alt=alt)
-            ac           = ws_log.cell(row=row, column=2, value=action)
-            ac.font      = Font(name=FONT, bold=True, size=9, color=_argb(afg))
-            ac.fill      = solid(abg)
-            ac.alignment = Alignment(horizontal="center", vertical="center")
-            ac.border    = _box(BORDER_CLR)
-            dat(ws_log.cell(row=row, column=3), r.get("type","").strip(),        align="center", alt=alt)
-            dat(ws_log.cell(row=row, column=4), r.get("description","").strip(), align="left",   alt=alt)
+            dat(ws_log.cell(row=row, column=1), r.get("date","").strip(),        align="center")
+            ac            = ws_log.cell(row=row, column=2, value=action)
+            ac.font       = Font(name=FONT, bold=True, size=9, color=_argb(afg))
+            ac.fill       = solid(abg)
+            ac.alignment  = Alignment(horizontal="center", vertical="center")
+            ac.border     = _box(BORDER_CLR)
+            dat(ws_log.cell(row=row, column=3), r.get("type","").strip(),        align="center")
+            dat(ws_log.cell(row=row, column=4), r.get("description","").strip(), align="left")
             amt = r.get("amount","").strip()
-            try:    dat(ws_log.cell(row=row, column=5), float(amt), align="right", alt=alt, fmt=TND_FMT)
-            except: dat(ws_log.cell(row=row, column=5), amt,        align="right", alt=alt)
+            try:    dat(ws_log.cell(row=row, column=5), float(amt), align="right", fmt=TND_FMT)
+            except: dat(ws_log.cell(row=row, column=5), amt,        align="right")
 
     # ── Save xlsx ─────────────────────────────────────────────────────────
     try:
@@ -1258,13 +1256,29 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ["Total Entries", n_inc + n_exp, f"total ({n_inc} income, {n_exp} expense)"],
             ["Last Exported", export_date,   ""],
         ]
-        income_data  = [["ID","Description","Amount (TND)","Date","Notes"]]
+        # Each data array must include title (row 1) + spacer (row 2) + headers (row 3)
+        # so the values write aligns with the batchUpdate format requests.
+        income_data  = [
+            ["INCOME", "", "", "", ""],
+            ["", "", "", "", ""],
+            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
+        ]
         for i, r in enumerate(income_rows, 1):
             income_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
-        expense_data = [["ID","Description","Amount (TND)","Date","Notes"]]
+
+        expense_data = [
+            ["EXPENSES", "", "", "", ""],
+            ["", "", "", "", ""],
+            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
+        ]
         for i, r in enumerate(expense_rows, 1):
             expense_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
-        log_data = [["Date","Action","Type","Description","Amount"]]
+
+        log_data = [
+            ["ACTIVITY LOG", "", "", "", ""],
+            ["", "", "", "", ""],
+            ["Date", "Action", "Type", "Description", "Amount"],
+        ]
         for r in log_rows:
             amt = r.get("amount","").strip()
             try:    amt = float(amt)
