@@ -611,6 +611,10 @@ def import_from_gsheet(sheet_id, existing_rows):
         print(f"Error: credentials file '{GSHEET_CREDS}' not found.", file=sys.stderr)
         sys.exit(EXIT_FILE_ERROR)
 
+    def _norm_date(d):
+        """Strip time portion from any date string, keep only DD/MM/YYYY."""
+        return d.strip().split(" ")[0].split("T")[0] if d else ""
+
     print(f"Connecting to Google Sheets ({sheet_id})...")
 
     try:
@@ -628,7 +632,10 @@ def import_from_gsheet(sheet_id, existing_rows):
         return
 
     print(f"Found {len(sheets)} tab(s): {[s['properties']['title'] for s in sheets]}")
-    total_added = total_skipped = total_invalid = 0
+
+    # Collect all valid rows from every tab first, then overwrite CSV once
+    imported_rows = []
+    total_imported = total_invalid = 0
 
     for sheet in sheets:
         tab_name = sheet["properties"]["title"]
@@ -668,23 +675,7 @@ def import_from_gsheet(sheet_id, existing_rows):
             print(f"  Skipping -- missing required columns: {', '.join(missing)}")
             continue
 
-        def _norm_date(d):
-            """Strip time portion from any date string, keep only DD/MM/YYYY."""
-            return d.strip().split(" ")[0].split("T")[0] if d else ""
-
-        def _norm_amount(a):
-            """Normalize amount string to float string for reliable key comparison."""
-            try:
-                return str(float(a.replace("TND","").replace("USD","").replace(",","").replace("$","").strip()))
-            except (ValueError, AttributeError):
-                return a.strip()
-
-        existing_keys = {
-            (r["type"].upper(), r["description"].strip().lower(),
-             _norm_amount(r["amount"]), _norm_date(r["date"]))
-            for r in existing_rows
-        }
-        added = skipped = invalid = 0
+        tab_imported = tab_invalid = 0
 
         for raw in raw_rows[data_start_idx:]:
             if not any(str(c).strip() for c in raw):
@@ -699,38 +690,38 @@ def import_from_gsheet(sheet_id, existing_rows):
                 if "income" in tab_name.lower():   entry_type = "INCOME"
                 elif "expense" in tab_name.lower(): entry_type = "EXPENSE"
                 else:
-                    invalid += 1; continue
+                    tab_invalid += 1; continue
 
             if entry_type not in ("INCOME", "EXPENSE"):
-                invalid += 1; continue
+                tab_invalid += 1; continue
 
             try:
                 clean  = amount_str.replace("TND","").replace("USD","").replace(",","").replace("$","").strip()
                 amount = float(clean)
             except ValueError:
-                invalid += 1; continue
+                tab_invalid += 1; continue
 
             if not date_str:
                 date_str = datetime.now().strftime("%d/%m/%Y")
 
-            key = (entry_type, description.strip().lower(), str(amount), date_str)
-            if key in existing_keys:
-                skipped += 1; continue
-
-            existing_rows.append({"type": entry_type, "description": description,
+            imported_rows.append({"type": entry_type, "description": description,
                                    "amount": str(amount), "date": date_str, "notes": notes})
-            existing_keys.add(key)
-            log_event("IMPORT", entry_type, description, amount)
-            added += 1
+            tab_imported += 1
 
-        print(f"  Tab complete: {added} added, {skipped} already existed, {invalid} invalid.")
-        total_added += added; total_skipped += skipped; total_invalid += invalid
+        print(f"  Tab complete: {tab_imported} rows read, {tab_invalid} invalid.")
+        total_imported += tab_imported
+        total_invalid  += tab_invalid
 
-    if total_added > 0:
-        save_finance(existing_rows)
+    # Always overwrite CSV with whatever GSheets has — even if empty
+    save_finance(imported_rows)
+    for r in imported_rows:
+        log_event("IMPORT", r["type"], r["description"], r["amount"])
 
     print(f"\n{'=' * 50}")
-    print(f"Import complete: {total_added} added | {total_skipped} already existed | {total_invalid} invalid")
+    if imported_rows:
+        print(f"Import complete: CSV overwritten with {total_imported} rows from Google Sheets ({total_invalid} invalid skipped)")
+    else:
+        print("Google Sheets has no data — CSV cleared.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1287,6 +1278,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ["Total Entries", n_inc + n_exp, f"total ({n_inc} income, {n_exp} expense)"],
             ["Last Exported", export_date,   ""],
         ]
+        # Each data array must include title (row 1) + spacer (row 2) + headers (row 3)
+        # so the values write aligns with the batchUpdate format requests.
         income_data  = [
             ["INCOME", "", "", "", ""],
             ["", "", "", "", ""],
@@ -1318,6 +1311,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         tabs_data = {"Summary": summary_data, "Income": income_data,
                      "Expenses": expense_data, "Log": log_data}
 
+        # Delete + recreate tabs cleanly
         spreadsheet  = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
         existing_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
                         for s in spreadsheet.get("sheets", [])}
@@ -1349,10 +1343,12 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             body={"requests": [{"deleteSheet": {"sheetId": tmp_id}}]},
         ).execute()
 
+        # Collect new tab IDs
         final      = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
         tab_ids    = {s["properties"]["title"]: s["properties"]["sheetId"]
                       for s in final["sheets"] if s["properties"]["title"] in tabs_data}
 
+        # Write data
         for tab_name, data in tabs_data.items():
             result = service.spreadsheets().values().update(
                 spreadsheetId=gsheet_id,
@@ -1362,8 +1358,10 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ).execute()
             print(f"  \u2713 {tab_name}: {result.get('updatedCells', 0)} cells written")
 
+        # Apply formatting via batchUpdate
         print("  Applying formatting...")
         fmt_requests = _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows)
+        # Send in chunks of 500 to stay well within API limits
         chunk = 500
         for i in range(0, len(fmt_requests), chunk):
             service.spreadsheets().batchUpdate(
