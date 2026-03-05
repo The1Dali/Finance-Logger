@@ -784,17 +784,17 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         # Row 4: Opening Balance
         row_h(sid, 3, 4, 26),
         rc(sid, 3, 4, 0, 1, cell_fmt("D6E4F7","0D2B5E","LEFT", bold=True), FULL),
-        rc(sid, 3, 4, 1, 2, cell_fmt("D6E4F7","0D2B5E","RIGHT"), FULL),
+        rc(sid, 3, 4, 1, 2, cell_fmt("D6E4F7","0D2B5E","CENTER"), FULL),
         rc(sid, 3, 4, 2, 3, cell_fmt("D6E4F7","0D2B5E","CENTER"), FULL),
         # Row 5: Total Income
         row_h(sid, 4, 5, 26),
         rc(sid, 4, 5, 0, 1, cell_fmt("D4EDDA","0B3D1E","LEFT", bold=True), FULL),
-        rc(sid, 4, 5, 1, 2, cell_fmt("D4EDDA","0B3D1E","RIGHT"), FULL),
+        rc(sid, 4, 5, 1, 2, cell_fmt("D4EDDA","0B3D1E","CENTER"), FULL),
         rc(sid, 4, 5, 2, 3, cell_fmt("D4EDDA","0B3D1E","CENTER"), FULL),
         # Row 6: Total Expenses
         row_h(sid, 5, 6, 26),
         rc(sid, 5, 6, 0, 1, cell_fmt("F8D7DA","5C0A0A","LEFT", bold=True), FULL),
-        rc(sid, 5, 6, 1, 2, cell_fmt("F8D7DA","5C0A0A","RIGHT"), FULL),
+        rc(sid, 5, 6, 1, 2, cell_fmt("F8D7DA","5C0A0A","CENTER"), FULL),
         rc(sid, 5, 6, 2, 3, cell_fmt("F8D7DA","5C0A0A","CENTER"), FULL),
         # Row 7: spacer
         row_h(sid, 6, 7, 8),
@@ -808,14 +808,14 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         reqs += [
             row_h(sid, ri, ri+1, 26),
             rc(sid, ri, ri+1, 0, 1, cell_fmt("D6E4F7","0D2B5E","LEFT", bold=True), FULL),
-            rc(sid, ri, ri+1, 1, 2, cell_fmt("D6E4F7","0D2B5E","RIGHT"), FULL),
+            rc(sid, ri, ri+1, 1, 2, cell_fmt("D6E4F7","0D2B5E","CENTER"), FULL),
             rc(sid, ri, ri+1, 2, 3, cell_fmt("D6E4F7","0D2B5E","CENTER"), FULL),
         ]
     reqs += [
         # Row 12: Net Balance
         row_h(sid, 11, 12, 26),
         rc(sid, 11, 12, 0, 1, cell_fmt("2E75C8","FFFFFF","LEFT",  bold=True), FULL),
-        rc(sid, 11, 12, 1, 2, cell_fmt("2E75C8","FFFFFF","RIGHT", bold=True), FULL),
+        rc(sid, 11, 12, 1, 2, cell_fmt("2E75C8","FFFFFF","CENTER", bold=True), FULL),
         rc(sid, 11, 12, 2, 3, cell_fmt("2E75C8","FFFFFF","CENTER",bold=True), FULL),
         # Row 13: spacer
         row_h(sid, 12, 13, 8),
@@ -826,11 +826,11 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         # Rows 15-16: metadata data
         row_h(sid, 14, 15, 26),
         rc(sid, 14, 15, 0, 1, cell_fmt("EEF2FA","3A4A6B","LEFT", bold=True), FULL),
-        rc(sid, 14, 15, 1, 2, cell_fmt("EEF2FA","3A4A6B","RIGHT"), FULL),
+        rc(sid, 14, 15, 1, 2, cell_fmt("EEF2FA","3A4A6B","CENTER"), FULL),
         rc(sid, 14, 15, 2, 3, cell_fmt("EEF2FA","3A4A6B","CENTER"), FULL),
         row_h(sid, 15, 16, 26),
         rc(sid, 15, 16, 0, 1, cell_fmt("EEF2FA","3A4A6B","LEFT", bold=True), FULL),
-        rc(sid, 15, 16, 1, 2, cell_fmt("EEF2FA","3A4A6B","RIGHT"), FULL),
+        rc(sid, 15, 16, 1, 2, cell_fmt("EEF2FA","3A4A6B","CENTER"), FULL),
         rc(sid, 15, 16, 2, 3, cell_fmt("EEF2FA","3A4A6B","CENTER"), FULL),
     ]
 
@@ -919,8 +919,8 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
                 "horizontalAlignment": "CENTER",
                 "verticalAlignment": "MIDDLE"}, FULL),
             rc(sid, ri, ri+1, 2, 3, cell_fmt("FFFFFF", align="CENTER"), FULL),  # Type
-            rc(sid, ri, ri+1, 3, 4, cell_fmt("FFFFFF", align="LEFT"),   FULL),  # Description
-            rc(sid, ri, ri+1, 4, 5, cell_fmt("FFFFFF", align="RIGHT"),  FULL),  # Amount
+            rc(sid, ri, ri+1, 3, 4, cell_fmt("FFFFFF", align="CENTER"), FULL),  # Description
+            rc(sid, ri, ri+1, 4, 5, cell_fmt("FFFFFF", align="CENTER"), FULL),  # Amount
         ]
 
     return reqs
@@ -1075,7 +1075,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             vc.number_format = fmt
         vc.font      = Font(name=FONT, bold=bold_val, size=10, color=_argb(fg))
         vc.fill      = solid(bg)
-        vc.alignment = Alignment(horizontal="right", vertical="center")
+        vc.alignment = Alignment(horizontal="center", vertical="center")
         vc.border    = _box(BORDER_CLR)
         cc           = ss.cell(row=row_num, column=3, value=context)
         cc.font      = Font(name=FONT, size=9, color=_argb(fg))
@@ -1202,10 +1202,10 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ac.alignment  = Alignment(horizontal="center", vertical="center")
             ac.border     = _box(BORDER_CLR)
             dat(ws_log.cell(row=row, column=3), r.get("type","").strip(),        align="center")
-            dat(ws_log.cell(row=row, column=4), r.get("description","").strip(), align="left")
+            dat(ws_log.cell(row=row, column=4), r.get("description","").strip(), align="center")
             amt = r.get("amount","").strip()
-            try:    dat(ws_log.cell(row=row, column=5), float(amt), align="right", fmt=TND_FMT)
-            except: dat(ws_log.cell(row=row, column=5), amt,        align="right")
+            try:    dat(ws_log.cell(row=row, column=5), float(amt), align="center", fmt=TND_FMT)
+            except: dat(ws_log.cell(row=row, column=5), amt,        align="center")
 
     # ── Save xlsx ─────────────────────────────────────────────────────────
     try:
