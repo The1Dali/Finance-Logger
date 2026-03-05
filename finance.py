@@ -837,7 +837,7 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
     # ── INCOME ───────────────────────────────────────────────────────────
     sid = tab_ids["Income"]
     reqs += [
-        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
+        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 145), col_w(sid, 2, 3, 260),
         col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
         row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
         rc(sid, 0, 1, 0, 5, title_fmt("1A7A3A"), FULL),
@@ -852,17 +852,17 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
         reqs += [
             row_h(sid, ri, ri+1, 22),
-            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),
-            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="LEFT"),   FULL),
-            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="RIGHT"),  FULL),
-            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),
-            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="LEFT"),   FULL),
+            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),  # ID
+            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),  # Amount
+            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),  # Description
+            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),  # Date
+            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),  # Notes
         ]
 
     # ── EXPENSES ─────────────────────────────────────────────────────────
     sid = tab_ids["Expenses"]
     reqs += [
-        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
+        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 145), col_w(sid, 2, 3, 260),
         col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
         row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
         rc(sid, 0, 1, 0, 5, title_fmt("B52525"), FULL),
@@ -877,11 +877,11 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
         reqs += [
             row_h(sid, ri, ri+1, 22),
-            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),
-            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="LEFT"),   FULL),
-            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="RIGHT"),  FULL),
-            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),
-            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="LEFT"),   FULL),
+            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),  # ID
+            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),  # Amount
+            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),  # Description
+            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),  # Date
+            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),  # Notes
         ]
 
     # ── LOG ──────────────────────────────────────────────────────────────
@@ -895,8 +895,8 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         "BALANCE": "0D2B5E", "IMPORT":  "4A0E72", "EXPORT":  "1A5276",
     }
     reqs += [
-        col_w(sid, 0, 1, 190), col_w(sid, 1, 2, 100), col_w(sid, 2, 3, 90),
-        col_w(sid, 3, 4, 290), col_w(sid, 4, 5, 175),
+        col_w(sid, 0, 1, 190), col_w(sid, 1, 2, 110), col_w(sid, 2, 3, 100),
+        col_w(sid, 3, 4, 400), col_w(sid, 4, 5, 175),
         row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
         rc(sid, 0, 1, 0, 5, title_fmt("2C2C2C"), FULL),
         row_h(sid, 1, 2, 6),
@@ -1025,8 +1025,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     DATA_START   = 4
     inc_end      = DATA_START + n_inc - 1 if n_inc else DATA_START
     exp_end      = DATA_START + n_exp - 1 if n_exp else DATA_START
-    inc_ref      = f"'Income'!C{DATA_START}:C{inc_end}"   if n_inc else "'Income'!C4:C4"
-    exp_ref      = f"'Expenses'!C{DATA_START}:C{exp_end}" if n_exp else "'Expenses'!C4:C4"
+    inc_ref      = f"'Income'!B{DATA_START}:B{inc_end}"   if n_inc else "'Income'!B4:B4"
+    exp_ref      = f"'Expenses'!B{DATA_START}:B{exp_end}" if n_exp else "'Expenses'!B4:B4"
 
     # ── SUMMARY ──────────────────────────────────────────────────────────
     ss = wb.active
@@ -1113,8 +1113,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_inc.sheet_properties.tabColor = GREEN_DARK
     ws_inc.sheet_view.showGridLines  = False
     ws_inc.column_dimensions["A"].width =  7
-    ws_inc.column_dimensions["B"].width = 36
-    ws_inc.column_dimensions["C"].width = 20
+    ws_inc.column_dimensions["B"].width = 20
+    ws_inc.column_dimensions["C"].width = 36
     ws_inc.column_dimensions["D"].width = 18
     ws_inc.column_dimensions["E"].width = 44
     ws_inc.row_dimensions[2].height = 6
@@ -1122,26 +1122,26 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_inc.freeze_panes = "A4"
     title_cell(ws_inc, "A1:E1", "INCOME", GREEN_DARK, row_h=40)
     for col, (text, align) in enumerate([
-        ("ID","center"),("Description","left"),("Amount (TND)","center"),("Date","center"),("Notes","left")
+        ("ID","center"),("Amount (TND)","center"),("Description","center"),("Date","center"),("Notes","center")
     ], 1):
         hdr(ws_inc.cell(row=3, column=col), text, GREEN_MID, align=align)
     for i, r in enumerate(income_rows):
         row = i + DATA_START
         alt = i % 2 == 1
         ws_inc.row_dimensions[row].height = 22
-        dat(ws_inc.cell(row=row, column=1), i+1,              align="center", alt=alt)
-        dat(ws_inc.cell(row=row, column=2), r["description"], align="left",   alt=alt)
-        dat(ws_inc.cell(row=row, column=3), float(r["amount"]),align="right", alt=alt, fmt=TND_FMT)
-        dat(ws_inc.cell(row=row, column=4), r["date"],        align="center", alt=alt)
-        dat(ws_inc.cell(row=row, column=5), r.get("notes",""),align="left",   alt=alt, wrap=True)
+        dat(ws_inc.cell(row=row, column=1), i+1,               align="center", alt=alt)
+        dat(ws_inc.cell(row=row, column=2), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
+        dat(ws_inc.cell(row=row, column=3), r["description"],  align="center", alt=alt)
+        dat(ws_inc.cell(row=row, column=4), r["date"],         align="center", alt=alt)
+        dat(ws_inc.cell(row=row, column=5), r.get("notes",""), align="center", alt=alt, wrap=True)
 
     # ── EXPENSES ─────────────────────────────────────────────────────────
     ws_exp = wb.create_sheet("Expenses")
     ws_exp.sheet_properties.tabColor = RED_DARK
     ws_exp.sheet_view.showGridLines  = False
     ws_exp.column_dimensions["A"].width =  7
-    ws_exp.column_dimensions["B"].width = 36
-    ws_exp.column_dimensions["C"].width = 20
+    ws_exp.column_dimensions["B"].width = 20
+    ws_exp.column_dimensions["C"].width = 36
     ws_exp.column_dimensions["D"].width = 18
     ws_exp.column_dimensions["E"].width = 44
     ws_exp.row_dimensions[2].height = 6
@@ -1149,18 +1149,18 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_exp.freeze_panes = "A4"
     title_cell(ws_exp, "A1:E1", "EXPENSES", RED_DARK, row_h=40)
     for col, (text, align) in enumerate([
-        ("ID","center"),("Description","left"),("Amount (TND)","center"),("Date","center"),("Notes","left")
+        ("ID","center"),("Amount (TND)","center"),("Description","center"),("Date","center"),("Notes","center")
     ], 1):
         hdr(ws_exp.cell(row=3, column=col), text, RED_MID, align=align)
     for i, r in enumerate(expense_rows):
         row = i + DATA_START
         alt = i % 2 == 1
         ws_exp.row_dimensions[row].height = 22
-        dat(ws_exp.cell(row=row, column=1), i+1,              align="center", alt=alt)
-        dat(ws_exp.cell(row=row, column=2), r["description"], align="left",   alt=alt)
-        dat(ws_exp.cell(row=row, column=3), float(r["amount"]),align="right", alt=alt, fmt=TND_FMT)
-        dat(ws_exp.cell(row=row, column=4), r["date"],        align="center", alt=alt)
-        dat(ws_exp.cell(row=row, column=5), r.get("notes",""),align="left",   alt=alt, wrap=True)
+        dat(ws_exp.cell(row=row, column=1), i+1,               align="center", alt=alt)
+        dat(ws_exp.cell(row=row, column=2), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
+        dat(ws_exp.cell(row=row, column=3), r["description"],  align="center", alt=alt)
+        dat(ws_exp.cell(row=row, column=4), r["date"],         align="center", alt=alt)
+        dat(ws_exp.cell(row=row, column=5), r.get("notes",""), align="center", alt=alt, wrap=True)
 
     # ── LOG ──────────────────────────────────────────────────────────────
     ws_log = wb.create_sheet("Log")
@@ -1169,7 +1169,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_log.column_dimensions["A"].width = 26
     ws_log.column_dimensions["B"].width = 14
     ws_log.column_dimensions["C"].width = 12
-    ws_log.column_dimensions["D"].width = 40
+    ws_log.column_dimensions["D"].width = 55
     ws_log.column_dimensions["E"].width = 24
     ws_log.row_dimensions[2].height = 6
     ws_log.row_dimensions[3].height = 24
@@ -1261,18 +1261,18 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         income_data  = [
             ["INCOME", "", "", "", ""],
             ["", "", "", "", ""],
-            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
+            ["ID", "Amount (TND)", "Description", "Date", "Notes"],
         ]
         for i, r in enumerate(income_rows, 1):
-            income_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
+            income_data.append([i, float(r["amount"]), r["description"], r["date"], r.get("notes","")])
 
         expense_data = [
             ["EXPENSES", "", "", "", ""],
             ["", "", "", "", ""],
-            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
+            ["ID", "Amount (TND)", "Description", "Date", "Notes"],
         ]
         for i, r in enumerate(expense_rows, 1):
-            expense_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
+            expense_data.append([i, float(r["amount"]), r["description"], r["date"], r.get("notes","")])
 
         log_data = [
             ["ACTIVITY LOG", "", "", "", ""],
