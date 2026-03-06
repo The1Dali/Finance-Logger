@@ -572,6 +572,46 @@ def clear_all():
     log_event("CLEAR")
     print("All entries cleared.")
 
+    # Also clear data rows from Google Sheets Income & Expenses if configured
+    if not GSHEET_ID:
+        return
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        if not os.path.exists(GSHEET_CREDS):
+            return
+        creds   = service_account.Credentials.from_service_account_file(
+            GSHEET_CREDS, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        service = build("sheets", "v4", credentials=creds)
+
+        for tab_name in ("Income", "Expenses"):
+            result = service.spreadsheets().values().get(
+                spreadsheetId=GSHEET_ID, range=f"'{tab_name}'!A:E").execute()
+            rows = result.get("values", [])
+
+            # Find header row
+            header_idx = None
+            for i, row in enumerate(rows):
+                if any("description" in str(c).lower() for c in row):
+                    header_idx = i
+                    break
+
+            if header_idx is None or header_idx + 1 >= len(rows):
+                print(f"  {tab_name}: no data rows to clear.")
+                continue
+
+            # Clear everything below the header
+            data_start_row = header_idx + 2  # 1-indexed
+            service.spreadsheets().values().clear(
+                spreadsheetId=GSHEET_ID,
+                range=f"'{tab_name}'!A{data_start_row}:E",
+                body={},
+            ).execute()
+            print(f"  \u2713 {tab_name}: data rows cleared in Google Sheets.")
+
+    except Exception as e:
+        print(f"  Warning: could not clear Google Sheets tabs: {e}", file=sys.stderr)
+
 
 COLUMN_MAP = {
     "type":        ["type", "entry type", "transaction type", "category"],
@@ -581,7 +621,7 @@ COLUMN_MAP = {
     "notes":       ["notes", "note", "comments", "comment", "remarks"],
 }
 
-SKIP_TABS       = {"summary", "metadata", "template", "readme", "instructions"}
+SKIP_TABS       = {"summary", "log", "activity log", "metadata", "template", "readme", "instructions"}
 HEADER_KEYWORDS = {"description", "desc", "amount", "value", "price", "date", "day", "item", "name"}
 
 
@@ -712,16 +752,43 @@ def import_from_gsheet(sheet_id, existing_rows):
         total_imported += tab_imported
         total_invalid  += tab_invalid
 
-    # Always overwrite CSV with whatever GSheets has — even if empty
-    save_finance(imported_rows)
+    # Deduplicate AND stack: merge rows with same type+description by summing amounts
+    # This mirrors the add_entry merge logic so import behaves consistently
+    merged = {}  # key: (type, description_lower) → row dict
     for r in imported_rows:
+        key = (r["type"].upper(), r["description"].strip().lower())
+        if key in merged:
+            merged[key]["amount"] = str(float(merged[key]["amount"]) + float(r["amount"]))
+            # Keep latest date; append notes if different
+            merged[key]["date"] = r["date"].strip()
+            if r.get("notes","").strip() and r["notes"] != merged[key].get("notes",""):
+                existing_notes = merged[key].get("notes","").strip()
+                new_notes      = r["notes"].strip()
+                merged[key]["notes"] = (existing_notes + "; " + new_notes).strip("; ") if existing_notes else new_notes
+        else:
+            merged[key] = {
+                "type":        r["type"].upper(),
+                "description": r["description"].strip(),
+                "amount":      str(float(r["amount"])),
+                "date":        r["date"].strip(),
+                "notes":       r.get("notes","").strip(),
+            }
+
+    final_rows   = list(merged.values())
+    dupes_merged = total_imported - len(final_rows)
+    if dupes_merged:
+        print(f"  Merged {dupes_merged} duplicate/stacked row(s).")
+
+    # Always overwrite CSV with merged data (even if empty)
+    save_finance(final_rows)
+    for r in final_rows:
         log_event("IMPORT", r["type"], r["description"], r["amount"])
 
+    # Import never touches GSheets — that's export's job
+    # (Rewriting GSheets here breaks Google Form links)
+
     print(f"\n{'=' * 50}")
-    if imported_rows:
-        print(f"Import complete: CSV overwritten with {total_imported} rows from Google Sheets ({total_invalid} invalid skipped)")
-    else:
-        print("Google Sheets has no data — CSV cleared.")
+    print(f"Import complete: {len(final_rows)} rows saved to CSV ({total_invalid} invalid, {dupes_merged} merged)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -856,55 +923,57 @@ def _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows):
         rc(sid, 15, 16, 2, 3, cell_fmt("EEF2FA","3A4A6B","CENTER"), FULL),
     ]
 
-    # ── INCOME ───────────────────────────────────────────────────────────
-    sid = tab_ids["Income"]
-    reqs += [
-        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 145), col_w(sid, 2, 3, 260),
-        col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
-        row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
-        rc(sid, 0, 1, 0, 5, title_fmt("1A7A3A"), FULL),
-        row_h(sid, 1, 2, 6),
-        rc(sid, 1, 2, 0, 5, {"backgroundColor": color("FFFFFF")}, BG),
-        row_h(sid, 2, 3, 24),
-        rc(sid, 2, 3, 0, 5, hdr_fmt("28A745"), FULL),
-        freeze(sid, 3),
-    ]
-    for i in range(max(n_inc, 1)):
-        ri = 3 + i
-        bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
+    # ── INCOME (skipped if form-linked) ──────────────────────────────────
+    if "Income" in tab_ids:
+        sid = tab_ids["Income"]
         reqs += [
-            row_h(sid, ri, ri+1, 22),
-            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),  # ID
-            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),  # Amount
-            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),  # Description
-            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),  # Date
-            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),  # Notes
+            col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
+            col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
+            row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
+            rc(sid, 0, 1, 0, 5, title_fmt("1A7A3A"), FULL),
+            row_h(sid, 1, 2, 6),
+            rc(sid, 1, 2, 0, 5, {"backgroundColor": color("FFFFFF")}, BG),
+            row_h(sid, 2, 3, 24),
+            rc(sid, 2, 3, 0, 5, hdr_fmt("28A745"), FULL),
+            freeze(sid, 3),
         ]
+        for i in range(max(n_inc, 1)):
+            ri = 3 + i
+            bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
+            reqs += [
+                row_h(sid, ri, ri+1, 22),
+                rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),
+            ]
 
-    # ── EXPENSES ─────────────────────────────────────────────────────────
-    sid = tab_ids["Expenses"]
-    reqs += [
-        col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
-        col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
-        row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
-        rc(sid, 0, 1, 0, 5, title_fmt("B52525"), FULL),
-        row_h(sid, 1, 2, 6),
-        rc(sid, 1, 2, 0, 5, {"backgroundColor": color("FFFFFF")}, BG),
-        row_h(sid, 2, 3, 24),
-        rc(sid, 2, 3, 0, 5, hdr_fmt("DC3545"), FULL),
-        freeze(sid, 3),
-    ]
-    for i in range(max(n_exp, 1)):
-        ri = 3 + i
-        bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
+    # ── EXPENSES (skipped if form-linked) ────────────────────────────────
+    if "Expenses" in tab_ids:
+        sid = tab_ids["Expenses"]
         reqs += [
-            row_h(sid, ri, ri+1, 22),
-            rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),  # ID
-            rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),  # Amount
-            rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),  # Description
-            rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),  # Date
-            rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),  # Notes
+            col_w(sid, 0, 1,  55), col_w(sid, 1, 2, 260), col_w(sid, 2, 3, 145),
+            col_w(sid, 3, 4, 130), col_w(sid, 4, 5, 320),
+            row_h(sid, 0, 1, 40), merge(sid, 0, 1, 0, 5),
+            rc(sid, 0, 1, 0, 5, title_fmt("B52525"), FULL),
+            row_h(sid, 1, 2, 6),
+            rc(sid, 1, 2, 0, 5, {"backgroundColor": color("FFFFFF")}, BG),
+            row_h(sid, 2, 3, 24),
+            rc(sid, 2, 3, 0, 5, hdr_fmt("DC3545"), FULL),
+            freeze(sid, 3),
         ]
+        for i in range(max(n_exp, 1)):
+            ri = 3 + i
+            bg = "EEF3FC" if i % 2 == 1 else "FFFFFF"
+            reqs += [
+                row_h(sid, ri, ri+1, 22),
+                rc(sid, ri, ri+1, 0, 1, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 1, 2, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 2, 3, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 3, 4, cell_fmt(bg, align="CENTER"), FULL),
+                rc(sid, ri, ri+1, 4, 5, cell_fmt(bg, align="CENTER"), FULL),
+            ]
 
     # ── LOG ──────────────────────────────────────────────────────────────
     sid = tab_ids["Log"]
@@ -1047,7 +1116,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     DATA_START   = 4
     inc_end      = DATA_START + n_inc - 1 if n_inc else DATA_START
     exp_end      = DATA_START + n_exp - 1 if n_exp else DATA_START
-    inc_ref      = f"'Income'!B{DATA_START}:B{inc_end}"   if n_inc else "'Income'!B4:B4"
+    inc_ref      = f"'Income'!C{DATA_START}:C{inc_end}"   if n_inc else "'Income'!C4:C4"
     exp_ref      = f"'Expenses'!B{DATA_START}:B{exp_end}" if n_exp else "'Expenses'!B4:B4"
 
     # ── SUMMARY ──────────────────────────────────────────────────────────
@@ -1135,8 +1204,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_inc.sheet_properties.tabColor = GREEN_DARK
     ws_inc.sheet_view.showGridLines  = False
     ws_inc.column_dimensions["A"].width =  7
-    ws_inc.column_dimensions["B"].width = 20
-    ws_inc.column_dimensions["C"].width = 36
+    ws_inc.column_dimensions["B"].width = 36
+    ws_inc.column_dimensions["C"].width = 20
     ws_inc.column_dimensions["D"].width = 18
     ws_inc.column_dimensions["E"].width = 44
     ws_inc.row_dimensions[2].height = 6
@@ -1144,7 +1213,7 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
     ws_inc.freeze_panes = "A4"
     title_cell(ws_inc, "A1:E1", "INCOME", GREEN_DARK, row_h=40)
     for col, (text, align) in enumerate([
-        ("ID","center"),("Amount (TND)","center"),("Description","center"),("Date","center"),("Notes","center")
+        ("ID","center"),("Description","center"),("Amount (TND)","center"),("Date","center"),("Notes","center")
     ], 1):
         hdr(ws_inc.cell(row=3, column=col), text, GREEN_MID, align=align)
     for i, r in enumerate(income_rows):
@@ -1152,8 +1221,8 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         alt = i % 2 == 1
         ws_inc.row_dimensions[row].height = 22
         dat(ws_inc.cell(row=row, column=1), i+1,               align="center", alt=alt)
-        dat(ws_inc.cell(row=row, column=2), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
-        dat(ws_inc.cell(row=row, column=3), r["description"],  align="center", alt=alt)
+        dat(ws_inc.cell(row=row, column=2), r["description"],  align="center", alt=alt)
+        dat(ws_inc.cell(row=row, column=3), float(r["amount"]), align="center", alt=alt, fmt=TND_FMT)
         dat(ws_inc.cell(row=row, column=4), r["date"],         align="center", alt=alt)
         dat(ws_inc.cell(row=row, column=5), r.get("notes",""), align="center", alt=alt, wrap=True)
 
@@ -1283,10 +1352,10 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
         income_data  = [
             ["INCOME", "", "", "", ""],
             ["", "", "", "", ""],
-            ["ID", "Amount (TND)", "Description", "Date", "Notes"],
+            ["ID", "Description", "Amount (TND)", "Date", "Notes"],
         ]
         for i, r in enumerate(income_rows, 1):
-            income_data.append([i, float(r["amount"]), r["description"], r["date"], r.get("notes","")])
+            income_data.append([i, r["description"], float(r["amount"]), r["date"], r.get("notes","")])
 
         expense_data = [
             ["EXPENSES", "", "", "", ""],
@@ -1308,48 +1377,53 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             log_data.append([r.get("date","").strip(), r.get("action","").strip(),
                               r.get("type","").strip(), r.get("description","").strip(), amt])
 
-        tabs_data = {"Summary": summary_data, "Income": income_data,
-                     "Expenses": expense_data, "Log": log_data}
+        # ── Helper: normalize for dedup comparison ───────────────────────
+        def _norm_amt(a):
+            try:
+                return str(float(str(a).replace("TND","").replace(",","").strip()))
+            except (ValueError, TypeError):
+                return str(a).strip()
 
-        # Delete + recreate tabs cleanly
+        def _norm_dt(d):
+            """Normalize any date string or serial to DD/MM/YYYY for comparison."""
+            s = str(d).strip().split(" ")[0].split("T")[0]
+            # Handle Sheets/Excel date serial numbers (integers like 46083)
+            try:
+                serial = int(s)
+                from datetime import date as _date, timedelta as _td
+                epoch = _date(1899, 12, 30)
+                converted = epoch + _td(days=serial)
+                return converted.strftime("%d/%m/%Y")
+            except ValueError:
+                pass
+            # Handle YYYY/MM/DD or YYYY-MM-DD → DD/MM/YYYY
+            parts = s.replace("-", "/").split("/")
+            if len(parts) == 3 and len(parts[0]) == 4:
+                s = f"{parts[2]}/{parts[1]}/{parts[0]}"
+            return s
+
+        # ── Get current sheet state ───────────────────────────────────────
         spreadsheet  = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
         existing_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
                         for s in spreadsheet.get("sheets", [])}
 
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=gsheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": "__tmp__"}}}]},
-        ).execute()
-
-        delete_reqs = [{"deleteSheet": {"sheetId": sid}}
-                       for title, sid in existing_ids.items() if title in tabs_data]
-        if delete_reqs:
+        # ── Create any missing tabs (first-time setup) ────────────────────
+        all_tab_names  = ["Summary", "Income", "Expenses", "Log"]
+        create_reqs    = [
+            {"addSheet": {"properties": {"title": t, "index": i}}}
+            for i, t in enumerate(all_tab_names) if t not in existing_ids
+        ]
+        if create_reqs:
             service.spreadsheets().batchUpdate(
-                spreadsheetId=gsheet_id, body={"requests": delete_reqs}).execute()
+                spreadsheetId=gsheet_id, body={"requests": create_reqs}).execute()
+            spreadsheet  = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
+            existing_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
+                            for s in spreadsheet.get("sheets", [])}
 
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=gsheet_id,
-            body={"requests": [
-                {"addSheet": {"properties": {"title": t, "index": i}}}
-                for i, t in enumerate(tabs_data)
-            ]},
-        ).execute()
-
-        refreshed = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
-        tmp_id    = next(s["properties"]["sheetId"] for s in refreshed["sheets"]
-                         if s["properties"]["title"] == "__tmp__")
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=gsheet_id,
-            body={"requests": [{"deleteSheet": {"sheetId": tmp_id}}]},
-        ).execute()
-
-        # Collect new tab IDs
-        final      = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
-        tab_ids    = {s["properties"]["title"]: s["properties"]["sheetId"]
-                      for s in final["sheets"] if s["properties"]["title"] in tabs_data}
-
-        # Write data
-        for tab_name, data in tabs_data.items():
+        # ── Summary & Log: clear + rewrite fully ─────────────────────────
+        for tab_name, data in [("Summary", summary_data), ("Log", log_data)]:
+            service.spreadsheets().values().clear(
+                spreadsheetId=gsheet_id, range=f"'{tab_name}'", body={}).execute()
             result = service.spreadsheets().values().update(
                 spreadsheetId=gsheet_id,
                 range=f"'{tab_name}'!A1",
@@ -1358,10 +1432,144 @@ def export_xlsx(rows, push_to_gsheet=False, gsheet_id=None):
             ).execute()
             print(f"  \u2713 {tab_name}: {result.get('updatedCells', 0)} cells written")
 
-        # Apply formatting via batchUpdate
+        # ── Income & Expenses: write banner+header if missing, append new rows ──
+        for tab_name, local_rows, title_text in [
+            ("Income",   income_rows,  "INCOME"),
+            ("Expenses", expense_rows, "EXPENSES"),
+        ]:
+            # Read current sheet contents (FORMATTED_VALUE ensures dates come back as strings)
+            existing_raw    = service.spreadsheets().values().get(
+                spreadsheetId=gsheet_id, range=f"'{tab_name}'!A:E",
+                valueRenderOption="FORMATTED_VALUE").execute()
+            existing_values = existing_raw.get("values", [])
+
+            # Check if banner+header structure exists (look for header row with "Description")
+            header_row_idx = None
+            for idx, row in enumerate(existing_values):
+                if any("description" in str(c).lower() for c in row):
+                    header_row_idx = idx
+                    break
+
+            # If no header found, sheet is empty or malformed — write banner+spacer+header first
+            if header_row_idx is None:
+                bootstrap = [
+                    [title_text, "", "", "", ""],
+                    ["", "", "", "", ""],
+                    ["ID", "Description", "Amount (TND)", "Date", "Notes"],
+                ]
+                service.spreadsheets().values().update(
+                    spreadsheetId=gsheet_id,
+                    range=f"'{tab_name}'!A1",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": bootstrap},
+                ).execute()
+                # Re-read to get updated state
+                existing_raw    = service.spreadsheets().values().get(
+                    spreadsheetId=gsheet_id, range=f"'{tab_name}'!A:E",
+                    valueRenderOption="FORMATTED_VALUE").execute()
+                existing_values = existing_raw.get("values", [])
+                header_row_idx  = 2  # row index 2 = row 3 in Sheets (0-indexed)
+
+            data_start = header_row_idx + 1
+
+            # Map description → sheet row number (1-based) and current amount
+            # Match on description only — amount may differ due to local stacking
+            sheet_desc_map = {}
+            for i, row in enumerate(existing_values[data_start:]):
+                desc = str(row[1]).strip().lower() if len(row) > 1 else ""
+                if desc and desc not in sheet_desc_map:
+                    sheet_desc_map[desc] = {
+                        "sheet_row": data_start + i + 1,  # 1-based Sheets row
+                        "amount":    _norm_amt(str(row[2])) if len(row) > 2 else "0",
+                        "col_c":     f"C{data_start + i + 1}",
+                    }
+
+            # Determine next ID
+            existing_ids_col = []
+            for row in existing_values[data_start:]:
+                try:    existing_ids_col.append(int(row[0]))
+                except: pass
+            next_id = max(existing_ids_col, default=0) + 1
+
+            rows_to_append  = []
+            rows_to_update  = []  # (range, new_amount)
+
+            for r in local_rows:
+                desc_key  = r["description"].strip().lower()
+                local_amt = _norm_amt(r["amount"])
+
+                if desc_key in sheet_desc_map:
+                    existing = sheet_desc_map[desc_key]
+                    if existing["amount"] != local_amt:
+                        # Amount changed locally — update the cell in place
+                        rows_to_update.append((existing["col_c"], float(r["amount"])))
+                    # else already matches — nothing to do
+                else:
+                    # New description — append
+                    rows_to_append.append([
+                        next_id,
+                        r["description"],
+                        float(r["amount"]),
+                        r["date"],
+                        r.get("notes", ""),
+                    ])
+                    next_id += 1
+
+            # Apply in-place amount updates
+            for cell_range, new_amt in rows_to_update:
+                service.spreadsheets().values().update(
+                    spreadsheetId=gsheet_id,
+                    range=f"'{tab_name}'!{cell_range}",
+                    valueInputOption="RAW",
+                    body={"values": [[new_amt]]},
+                ).execute()
+
+            # Append brand-new rows
+            if rows_to_append:
+                service.spreadsheets().values().append(
+                    spreadsheetId=gsheet_id,
+                    range=f"'{tab_name}'!A:E",
+                    valueInputOption="RAW",
+                    insertDataOption="INSERT_ROWS",
+                    body={"values": rows_to_append},
+                ).execute()
+
+            updated = len(rows_to_update)
+            appended = len(rows_to_append)
+            msg = []
+            if updated:  msg.append(f"{updated} updated")
+            if appended: msg.append(f"{appended} new")
+            if not msg:  msg.append("no changes")
+            print(f"  \u2713 {tab_name}: {', '.join(msg)}")
+
+        # ── Clear leftover cell formatting from Income & Expenses data rows ──
+        # (Previous exports may have colored these rows; reset them without touching links)
+        refreshed_sheets = service.spreadsheets().get(spreadsheetId=gsheet_id).execute()
+        protected_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
+                         for s in refreshed_sheets.get("sheets", [])
+                         if s["properties"]["title"] in {"Income", "Expenses"}}
+        clear_fmt_reqs = []
+        for ptab, psid in protected_ids.items():
+            clear_fmt_reqs.append({"repeatCell": {
+                "range": {"sheetId": psid, "startRowIndex": 3},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                    "textFormat": {"foregroundColor": {"red": 0, "green": 0, "blue": 0},
+                                   "bold": False, "fontSize": 10},
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+            }})
+        if clear_fmt_reqs:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=gsheet_id, body={"requests": clear_fmt_reqs}).execute()
+
+        # ── Formatting — Summary & Log only; never touch form-linked tabs ──
+        tab_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
+                   for s in refreshed_sheets.get("sheets", [])
+                   if s["properties"]["title"] in {"Summary", "Log"}}
+
         print("  Applying formatting...")
         fmt_requests = _build_gsheet_format_requests(tab_ids, n_inc, n_exp, log_rows)
-        # Send in chunks of 500 to stay well within API limits
         chunk = 500
         for i in range(0, len(fmt_requests), chunk):
             service.spreadsheets().batchUpdate(
